@@ -1,0 +1,61 @@
+# Stochastic declustering of the JMA M>=4.5 example. Every setting is shown with its default;
+# delete what you don't change. Run: python -m etas8py configs/jma.toml --out results/jma
+preset = "default"                  # "original": bit-exact reproduction of the Fortran
+
+[input]
+catalog = "../data/jma/alljpM45.etas"  # header line, then: id lon lat mag t(days) ...
+polygon = "jma_polygon.txt"         # file of 'lon lat' lines, or [[lon, lat], ...]
+t_min = 0.0                         # catalogue start (days): events at t <= t_min dropped
+t_start = 10000.0                   # target window [t_start, t_end] (days); earlier events
+t_end = 23376.0                     #   and events outside the polygon only trigger
+mag_min = 4.5                       # magnitude cutoff
+
+[params]                            # initial ETAS parameters
+mu = 0.592844590
+A = 0.204288231
+c = 0.022692883                         # days
+alpha = 1.495169224
+p = 1.109752319
+D = "0.001175925 deg2"                # units required: deg2 or km2
+q = 1.860044210
+gamma = 1.041549634
+
+[grid]                              # rate map (rates.dat); omit to skip
+lon = [134.0, 145.0]
+lat = [31.8, 44.3]
+n = [401, 401]
+
+[model]
+projection = "flat"                 # "flat" (original) or "laea" (equal-area)
+npp = 5                             # background bandwidth = distance to npp-th neighbour
+bwm = "0.05 deg"                    # ...floored at bwm. units required: deg or km
+optimise = true                     # false: keep the initial ETAS parameters
+
+[convergence]
+converge = true                     # false: fixed schedule below (the original)
+schedule = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]  # inner passes per outer iteration
+outer_metric = "loglik"             # "loglik": relative change of -log L at the MLE
+outer_tol = 1e-8                    #   "dphi": max change of any background probability
+max_outer = 11
+inner_metric = "dphi"               # same choices, per background/probability pass
+inner_tol = 1e-4
+max_inner = 11
+
+[run]
+threads = 0                         # 0 = serial; n = Numba threads (same results)
+
+[advanced]
+ndiv = 1000                         # pieces per polygon edge in the spatial integrals
+ndiv_check = true                   # log -log L change when ndiv is doubled (one-off)
+ndiv_check_tol = 1e-6               #   warn above this relative change
+fast_xint = true                    # fused polygon integrals (same to ~1e-12)
+tol = 1e-6                          # optimiser stopping tolerance
+max_sweeps = 10                     # optimiser sweeps of 8 quasi-Newton steps
+ls_step = 0.05                      # line search: first step, shrink and expand factors
+ls_shrink = 0.1
+ls_expand = 2.0
+frint_eps = 1.000000013351432e-10    # skip triangles with |2*area| below this (deg^2)
+frint_eps_r = 9.999999682655225e-21
+log_floor = 1e-25                   # lambda below this scores -log_penalty
+log_penalty = 100.0
+chunksize = 16                      # Numba parallel chunk (load balance)

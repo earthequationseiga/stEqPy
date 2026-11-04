@@ -1,0 +1,59 @@
+preset = "default"
+
+[input]
+catalog = "configs\\..\\data\\jma\\alljpM45.etas"
+polygon = "configs\\jma_polygon.txt"
+t_min = 0.0
+t_start = 10000.0
+t_end = 23376.0
+mag_min = 4.5
+
+[params]
+mu = 0.59284459
+A = 0.204288231
+c = 0.022692883
+alpha = 1.495169224
+p = 1.109752319
+D = "0.001175925 deg2"
+q = 1.86004421
+gamma = 1.041549634
+
+[grid]
+lon = [134.0, 145.0]
+lat = [31.8, 44.3]
+n = [401, 401]
+
+[model]
+projection = "laea"
+npp = 5
+bwm = "0.05 deg"
+optimise = true
+
+[convergence]
+converge = true
+schedule = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+outer_metric = "loglik"
+outer_tol = 1e-08
+max_outer = 11
+inner_metric = "dphi"
+inner_tol = 0.0001
+max_inner = 11
+
+[run]
+threads = 10
+
+[advanced]
+ndiv = 1000
+ndiv_check = true
+ndiv_check_tol = 1e-06
+fast_xint = true
+tol = 1e-06
+max_sweeps = 10
+ls_step = 0.05
+ls_shrink = 0.1
+ls_expand = 2.0
+frint_eps = 1.000000013351432e-10
+frint_eps_r = 9.999999682655225e-21
+log_floor = 1e-25
+log_penalty = 100.0
+chunksize = 16

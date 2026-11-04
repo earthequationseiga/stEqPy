@@ -251,3 +251,52 @@ Full runs, 10 cores: Fortran MPI np=10 3965 s; Python run.py fast-xint 10 thread
 (4.2x); OOP API 961 s. Outputs: rerun == previous runs bit for bit (Python and MPI); API ==
 run.py byte for byte (probs.dat, rates.dat, final para); Python 1:1 bench == Fortran bench
 bit for bit; all 4 tests pass.
+
+## Configuration and options (2026-11-04, `etas8py/config.py`, `geo.py`)
+Precedence: preset < original control file (`[input] control`) < TOML < call/CLI args.
+`python -m etas8py configs/jma.toml --out DIR [--threads N] [--preset original]
+[--set key=value]`; API `StochasticDeclustering.from_config(path, **overrides)`. Outputs:
+probs.dat, rates.dat (original formats), params.txt (D also in km^2, -logL, AIC), resolved
+config.toml (re-runnable), run.log. Unknown keys are errors.
+- Presets: `default` = Settings defaults; `original` = converge off, 1:1 xint, no ndiv
+  check, flat projection (bit-exact; `tests/test_config.py`: config/control-file inputs ==
+  readata arrays).
+- Units: model coordinates always degrees of great-circle arc (1 deg = 111.195 km) for every
+  projection, so D (deg^2), bwm, frint guards and optimiser conditioning keep their scale.
+  `bwm` and initial `D` must carry units (`deg`/`km`, `deg2`/`km2`).
+- Polygon: text file `lon lat` per line or inline list; checks: >= 3 vertices, closure,
+  repeats, zero area, self-intersection, lat/lon range, antimeridian (> 180 deg span);
+  clockwise rings reversed in lon/lat before projecting (Green's-theorem integral is -1
+  for clockwise). Warnings: no events before t_start / outside polygon; error: no targets.
+- Projections: `flat` (original) or `laea` (Lambert azimuthal equal-area at the polygon
+  centroid). JMA pairs < 1 deg (3.33M), projected/great-circle (`scripts/projection_error.py`):
+
+  | | p1 | median | p99 | min / max | 5-NN bandwidth p1-p99 |
+  |---|---|---|---|---|---|
+  | flat | 0.943 | 1.000 | 1.063 | 0.890 / 1.108 | 0.922-1.064 |
+  | laea | 0.9975 | 1.000 | 1.0019 | 0.993 / 1.008 | 0.996-1.004 |
+- Convergence (`converge = true`): outer iterations until `outer_metric` changes by
+  < `outer_tol` (max `max_outer`), each with bkgd/prob passes until `inner_metric` changes by
+  < `inner_tol` (max `max_inner`). Metrics: `loglik` (relative change of -log L at current
+  params/background, one extra func15) or `dphi` (max |change of phi_i|, free). History in
+  `sd.history` / run.log. loglik tol < 1e-9 warns (fast-xint rounding ~3e-10).
+- ndiv self-check (one-off, first pass): -log L at ndiv vs 2*ndiv; JMA 1.9e-8 (flat),
+  4.2e-8 (laea): ndiv=1000 is ample. Warns above `ndiv_check_tol` (1e-6).
+- Advanced table: ndiv, fast_xint, optimiser tol/max_sweeps, line-search step/shrink/expand,
+  frint guards, log floor/penalty, Numba chunksize (defaults = original constants).
+
+Full JMA runs, 10 threads, default preset (dphi inner 1e-4, loglik outer 1e-8):
+
+| run | outer its | passes | func15 calls | fit | -log L |
+|---|---|---|---|---|---|
+| original schedule, fast xint (`rerun_fast_t10`) | 11 | 66 | 512 | ~920 s | 15310.951861 |
+| default, flat | 6 | 32 | 485 | 838 s | 15310.951879 |
+| default, laea | 6 | 31 | 480 | 842 s | 15316.196908 |
+
+- default flat vs original schedule: params <= 1.4e-6 relative, zprob max |d| 8.4e-6
+  (mean 3.8e-7), background rates 6e-7. Outer loglik changes 4.9e-4, 5.7e-6, 4.6e-7,
+  3.1e-8, 3.1e-9. Inner cap (11) hit in outer 1-2 (dphi still 4.7e-4 / 5.8e-5).
+  Saving only ~10%: the late outer iterations it drops were already cheap.
+- laea vs flat: params move 0.04-1.5% (gamma -1.5%, A +1.4%, c -1.0%, D +1.0%), zprob max
+  |d| 0.088 (mean 2.2e-3), bandwidths up to 12%. -log L not comparable across projections
+  (flat densities are per flat deg^2, not true area).

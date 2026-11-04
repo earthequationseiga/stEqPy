@@ -16,7 +16,7 @@ stamp "build"
 bash scripts/build_fortran.sh > "$L/build.txt" 2>&1
 
 stamp "tests"
-for t in test_davidn test_xint_fast test_parallel test_declustering; do
+for t in test_davidn test_xint_fast test_parallel test_declustering test_geo test_config; do
     s=$(date +%s)
     "$PY" -I tests/$t.py > "$L/$t.txt" 2>&1
     echo "$t exit $? $(( $(date +%s) - s )) s" | tee -a "$L/progress.txt"

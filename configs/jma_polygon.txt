@@ -1,0 +1,10 @@
+# JMA study region from jap.in: lon lat (decimal degrees), counter-clockwise or clockwise
+134.0 31.9
+137.9 33.0
+143.1 33.2
+144.9 35.2
+147.8 41.3
+137.8 44.2
+137.4 40.2
+135.1 38.0
+130.6 35.4

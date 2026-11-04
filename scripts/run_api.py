@@ -16,14 +16,14 @@ if __name__ == "__main__":
     out.mkdir(parents=True, exist_ok=True)
     logf = open(out / "run.log", "w")
     t0 = time.perf_counter()
+    # original schedule and numerics, but fused xint: compares with `run.py --fast-xint`
     sd = StochasticDeclustering.from_input_file(infile, log=lambda s: logf.write(s + "\n"),
+                                                preset="original", fast_xint=True,
                                                 threads=threads)
     sd.fit()
     t1 = time.perf_counter()
-    mx, my, tx1, tx2, ty1, ty2 = sd.grid
-    gx = np.array([tx1 + (tx2 - tx1) / (mx - 1) * i for i in range(mx)])
-    gy = np.array([ty1 + (ty2 - ty1) / (my - 1) * j for j in range(my)])
-    rates = sd.rates(gx, gy)
+    _, _, rates = sd.rate_grid()
+    mx, my = sd.grid["n"]
     t2 = time.perf_counter()
 
     (out / "para").write_text(" " + "".join(f"{v:20.9f}" for v in sd.params.to_array()) + "\n")

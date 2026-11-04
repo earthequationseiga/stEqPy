@@ -22,6 +22,14 @@
 - Shipped reference outputs available for validation: `jap.out`, `probs.dat`, `rates.dat`,
   `para`, `fort.46` (no `pmatr.dat`). Final MLE in `para`.
 - Env: no gfortran, no MPI, WSL installed but no distro.
+- Git repo initialised (local, `main`): baseline + WIP commits.
+- Hyperparameter options: TOML config (`configs/jma.toml`, polygon `configs/jma_polygon.txt`),
+  presets `default`/`original`, units, polygon checks, flat/laea projections, inner/outer
+  convergence, ndiv self-check, advanced knobs, CLI `python -m etas8py`. Tests:
+  `test_geo.py`, `test_config.py` + the 4 old ones pass. Full runs + projection error table
+  in `architecture.md`: default flat == original schedule to ~1e-6; laea moves params <= 1.5%.
+  Not done: map-drawn polygon, log(theta-1) parametrisation (dropped), catalogue formats other
+  than the original one.
 
 **Next steps**: Prompt 2 — set up a Fortran toolchain and reproduce the shipped outputs.
 

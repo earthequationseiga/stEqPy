@@ -60,8 +60,10 @@ def read_polygon(path):
     return a[:, 0], a[:, 1]
 
 
-def check_lonlat_polygon(lon, lat):
-    """Open (unclosed) lon/lat vertex arrays after the geographic checks."""
+def check_lonlat_polygon(lon, lat, log=None):
+    """Open (unclosed) lon/lat vertex arrays after the geographic checks, made
+    counter-clockwise here (before projecting: the projection centre is computed from
+    the vertices, and reversing them later would change it in the last bits)."""
     lon, lat = np.asarray(lon, np.float64), np.asarray(lat, np.float64)
     if len(lon) > 1 and lon[0] == lon[-1] and lat[0] == lat[-1]:
         lon, lat = lon[:-1], lat[:-1]
@@ -70,6 +72,10 @@ def check_lonlat_polygon(lon, lat):
     if np.ptp(lon) > 180:
         raise ValueError("polygon spans more than 180 deg of longitude: if it crosses the "
                          "antimeridian, give longitudes in 0..360 instead of -180..180")
+    if np.sum(lon * np.roll(lat, -1) - np.roll(lon, -1) * lat) < 0:
+        if log:
+            log(" polygon was clockwise: vertex order reversed")
+        lon, lat = lon[::-1].copy(), lat[::-1].copy()
     return lon, lat
 
 
@@ -106,7 +112,7 @@ def _segments_cross(ax, ay, bx, by, cx, cy, dx, dy):
     """Segments AB and CD share at least one point (touching counts)."""
     def orient(px, py, qx, qy, rx, ry):
         v = (qx - px) * (ry - py) - (qy - py) * (rx - px)
-        return (v > 0) - (v < 0)
+        return int(v > 0) - int(v < 0)
 
     def on_seg(px, py, qx, qy, rx, ry):      # r on segment pq, given collinear
         return min(px, qx) <= rx <= max(px, qx) and min(py, qy) <= ry <= max(py, qy)
