@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Build artifacts
+build/
+*.o
+*.mod
+*.exe
+
+# Upstream archives + large generated outputs
+original/archives/
+data/
+results/**/*.dat
+pmatr.dat
+
+# Editor/OS
+.vscode/
+.DS_Store
