@@ -111,3 +111,17 @@ validation (overnight, Fortran + Python) vs shipped outputs; then first optimisa
 
 **Next steps**: next hot spots: bkgdcalc's polyint (same fusion trick:
 endpoint sharing), then O(N²) xlamb sum (space/time cutoffs), convergence test on schedule.
+
+### 2026-11-05 — algorithm explainer
+- `docs/algorithm_explainer.pdf` (source `.tex`, data `explainer_cum.dat` from
+  `scripts/explainer_data.py`): background, ETAS, flowchart, cost, JMA results. Build:
+  conda env `latex` (Tectonic + poppler), `tectonic algorithm_explainer.tex` from `docs/`.
+- Checks: at the MLE sum(phi, targets) 2347.5239 vs mu*xint0 2347.5237. Target background
+  fraction 50.4%. Background sum divides by the target window (13376 d), not the catalogue
+  span, which explains mu ~ 0.55 (13376/23376 = 0.57; inference from the code).
+- Still open: whether `laea` becomes the default projection; `run_api.py` rerun unverified.
+- Rechecked the explainer against the papers (Zhuang pubs: `zhuang2002jasa.pdf`, `zhuang2004jgr.pdf`).
+  `φ`, `ρ`, thinning and the weighted kernel match 2002. Code differs: power-law spatial kernel
+  with separate gamma (2002 Gaussian, 2004 power law with shared alpha); two-level loop, starts
+  from phi=1 (2002 one loop, starts from u=1 and fits first); npp=5/0.05 deg (2004 values; 2002
+  uses 20/0.02); T in u = target window only. Listed in explainer Section 8.

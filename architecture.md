@@ -104,7 +104,7 @@ Memory: O(N) only — no N×N matrix is kept. Hard cap = static arrays of 29000 
 - `frint`: `if(abs(theta).gt.1d0) theta=1d0-1e-10` also maps `theta < -1` to ~+1.
 - No convergence check in the main loop; schedule hard-coded (11 outer, 12-k inner).
 - `fmt` and input `nn` are read and ignored. Events above 29000 overflow silently.
-- `zbkgd` self-term `j = i` is included (by design in ZOV2002? — check paper).
+- `zbkgd` self-term `j = i` is included: matches ZOV2002 eqs. 13, 15 (sum over all j).
 - Serial port differs: 4 warm-up bkgd/prob passes, then 10×(3 passes + `dav`), always optimises.
 
 ## Improvement candidates (not decided yet)
