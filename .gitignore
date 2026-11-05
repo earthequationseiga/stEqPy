@@ -18,3 +18,10 @@ pmatr.dat
 # Editor/OS
 .vscode/
 .DS_Store
+
+# Local project docs (README.md stays tracked)
+CLAUDE.md
+PROMPTS.md
+architecture.md
+status.md
+docs/

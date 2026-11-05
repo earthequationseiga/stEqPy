@@ -16,6 +16,8 @@ Relative paths are relative to the TOML file. Unknown keys are errors (catches t
 import tomllib
 from pathlib import Path
 
+from .readers import read_control
+
 # Settings fields by TOML table (the tables are only for organisation: names are unique)
 SECTIONS = {
     "model": ("projection", "npp", "bwm", "optimise"),
@@ -75,7 +77,6 @@ def load(source=None, **overrides):
         if isinstance(inp_raw.get(k), str):
             inp_raw[k] = str(base / inp_raw[k])
     if "control" in inp_raw:
-        from .run import read_control
         c = read_control(inp_raw["control"])
         settings.update(npp=c["npp"], bwm=f"{c['bwm']!r} deg", optimise=c["ioptimise"] == 1)
         inp.update(control=inp_raw["control"], catalog=c["catalog"],

@@ -141,6 +141,72 @@ def _centroid(tx, ty):
     return xm / 6.0 / area, ym / 6.0 / area
 
 
+def ycentroid(tx, ty):
+    npoly = len(tx)
+    area = 0.0
+    ymoment = 0.0
+    for i in range(npoly):
+        i1 = (i + 1) % npoly
+        temp = tx[i] * ty[i1] - tx[i1] * ty[i]
+        area = area + temp
+        ymoment = ymoment + (ty[i] + ty[i1]) * temp
+    area = area / 2
+    return ymoment / 6.0 / area
+
+
+def _sgn(v):
+    return 1 if v > 0.0 else (-1 if v < 0.0 else 0)
+
+
+def polyse(px, py, xx, yy):
+    """Point in polygon (crossing count): 1 inside, -1 outside, 0 on the boundary.
+    px, py are closed (last vertex == first)."""
+    n = len(px) - 1
+    flag = np.empty(len(xx), dtype=np.int64)
+    for k in range(len(xx)):
+        x, y = xx[k], yy[k]
+        ip = 0
+        te = None
+        for i in range(n):
+            is_ = _sgn(y - py[i]) * _sgn(py[i + 1] - y)
+            if is_ < 0:
+                continue
+            if is_ > 0:
+                temp = (px[i + 1] * abs(y - py[i]) + px[i] * abs(py[i + 1] - y)
+                        - abs(py[i + 1] - py[i]) * x)
+                if temp > 0:
+                    ip += 1
+                elif temp == 0:
+                    te = 0
+                    break
+            elif y == py[i] and py[i + 1] > y:
+                if x - px[i] < 0:
+                    ip += 1
+                elif x - px[i] == 0:
+                    te = 0
+                    break
+            elif y == py[i + 1] and py[i] > y:
+                if x - px[i + 1] < 0:
+                    ip += 1
+                elif x - px[i + 1] == 0:
+                    te = 0
+                    break
+            elif y == py[i] and py[i + 1] < y:
+                if x - px[i] == 0:
+                    te = 0
+                    break
+            elif y == py[i + 1] and py[i] < y:
+                if x - px[i + 1] == 0:
+                    te = 0
+                    break
+            elif y == py[i + 1] and py[i] == y:
+                if _sgn(x - px[i]) * _sgn(px[i + 1] - x) > 0:
+                    te = 0
+                    break
+        flag[k] = te if te is not None else (1 if ip % 2 == 1 else -1)
+    return flag
+
+
 # -- projections ----------------------------------------------------------------------------
 class Projection:
     """lon/lat (deg) -> model x, y (deg of arc), centred on the polygon's area centroid."""
@@ -151,7 +217,7 @@ class Projection:
         self.kind = kind
         self.lon0, self.lat0 = _centroid(np.asarray(poly_lon), np.asarray(poly_lat))
         if kind == "flat":
-            from .run import ycentroid      # the original's loop, for bit-exact x scaling
+            # the original's loop, for bit-exact x scaling
             self.lat0 = ycentroid(poly_lon, poly_lat)
             self.cosm = math.cos(self.lat0 * DEG)
 

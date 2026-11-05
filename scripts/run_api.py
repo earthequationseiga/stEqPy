@@ -20,20 +20,20 @@ if __name__ == "__main__":
     sd = StochasticDeclustering.from_input_file(infile, log=lambda s: logf.write(s + "\n"),
                                                 preset="original", fast_xint=True,
                                                 threads=threads)
-    sd.fit()
+    res = sd.fit()
     t1 = time.perf_counter()
-    _, _, rates = sd.rate_grid()
-    mx, my = sd.grid["n"]
+    _, _, rates = res.rate_grid()
+    mx, my = res.grid["n"]
     t2 = time.perf_counter()
 
-    (out / "para").write_text(" " + "".join(f"{v:20.9f}" for v in sd.params.to_array()) + "\n")
+    (out / "para").write_text(" " + "".join(f"{v:20.9f}" for v in res.params.to_array()) + "\n")
     with open(out / "probs.dat", "w") as fh:
-        for i in range(len(sd.catalog)):
-            fh.write(f" {i + 1:8d}{sd.background_prob[i]:20.10f}{sd.bandwidth[i]:20.10f}"
-                     f"{sd.background_rate[i]:20.10f}\n")
+        for i in range(len(res.catalog)):
+            fh.write(f" {i + 1:8d}{res.background_prob[i]:20.10f}{res.bandwidth[i]:20.10f}"
+                     f"{res.background_rate[i]:20.10f}\n")
     with open(out / "rates.dat", "w") as fh:
         fh.write(f"{mx:12d}\n{my:12d}\n")
         np.savetxt(fh, rates, fmt="%20.10f")
     print(f"fit {t1 - t0:.1f} s  rates {t2 - t1:.1f} s  likelihood calls "
-          f"{sd.n_likelihood_calls}")
+          f"{res.n_likelihood_calls}")
     logf.close()

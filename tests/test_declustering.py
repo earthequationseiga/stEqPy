@@ -2,6 +2,7 @@
 bit-identical to the Fortran over a full run) exactly: same params, probabilities, rates.
 Schedule (2,) on 800 JMA events straddling the target-window start.
 Run: python -I tests/test_declustering.py"""
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -50,6 +51,34 @@ def test_matches_driver():
     assert np.array_equal(sd.rates(gx, gy), ref)
 
 
+def test_refit_restarts_and_results_are_snapshots():
+    d = readata(ROOT / "data/jma/jap.in")
+    i0 = int(np.searchsorted(d["zz"], d["tstart"])) - 100
+    sl = slice(i0, i0 + 200)
+    sd = StochasticDeclustering(
+        Catalog(*(d[k][sl].copy() for k in ("xx", "yy", "zz", "zmg"))),
+        Region(d["tx"], d["ty"], d["tstart"], d["tz"]),
+        ETASParams.from_array(d["b"]),
+        Settings(schedule=(1,), converge=False, ndiv_check=False, ndiv=50),
+    )
+    first = sd.fit()
+    saved = first.background_prob.copy()
+    second = sd.fit()
+    assert np.array_equal(first.background_prob, saved)   # untouched by the second fit
+    assert first.background_prob is not second.background_prob
+    assert np.array_equal(first.background_prob, second.background_prob)
+    assert np.array_equal(first.params.to_array(), second.params.to_array())
+    assert first.n_likelihood_calls == second.n_likelihood_calls
+
+
+def test_public_api_does_not_load_the_reference_driver():
+    code = (f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); import etas8py; "
+            "assert 'etas8py.run' not in sys.modules")
+    subprocess.run([sys.executable, "-I", "-c", code], check=True)
+
+
 if __name__ == "__main__":
+    test_refit_restarts_and_results_are_snapshots()
+    test_public_api_does_not_load_the_reference_driver()
     test_matches_driver()
     print("ok")

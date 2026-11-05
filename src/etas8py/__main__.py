@@ -33,14 +33,14 @@ def main(argv=None):
             logf.flush()
         t0 = time.perf_counter()
         sd = StochasticDeclustering.from_config(a.config, log, **over)
-        sd.fit()
+        res = sd.fit()
         t1 = time.perf_counter()
-        sd.write_outputs(out)
+        res.write_outputs(out)
         t2 = time.perf_counter()
         log(f" fit {t1 - t0:.1f} s, outputs {t2 - t1:.1f} s, likelihood calls "
-            f"{sd.n_likelihood_calls}, converged {sd.converged}")
-    print(f"fit {t1 - t0:.1f} s  outputs {t2 - t1:.1f} s  -logL {sd.neg_loglik:.6f}  "
-          f"converged {sd.converged}  -> {out}")
+            f"{res.n_likelihood_calls}, converged {res.converged}")
+    print(f"fit {t1 - t0:.1f} s  outputs {t2 - t1:.1f} s  -logL {res.neg_loglik:.6f}  "
+          f"converged {res.converged}  -> {out}")
 
 
 if __name__ == "__main__":
