@@ -8,6 +8,7 @@ Parameters arrive as x = sqrt(theta), theta = (mu, A, c, alpha, p, D, q, gamma),
 optimiser works on square roots to keep every parameter positive.
 """
 import math
+from functools import lru_cache
 
 import numpy as np
 from numba import njit, prange
@@ -295,13 +296,19 @@ def polyint_etas4(gamma, d, q, xmag, xp, yp, npoly, xc, yc, ndiv=NDIV, eps=E10, 
 def xint_fast(i, b, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, h, ndiv=NDIV, eps=E10,
               eps_r=E20):
     """xint with the fused polygon integrals (polyint_etas4). Same outputs up to rounding."""
+    si, sid, siq, sigamma = polyint_etas4(b[7] ** 2, b[5] ** 2, b[6] ** 2, zmg[i], tx, ty, npoly,
+                                          xx[i], yy[i], ndiv, eps, eps_r)
+    return _xint_terms(i, b, zz, zmg, tz, tstart, h, si, sid, siq, sigamma)
+
+
+@njit(cache=True)
+def _xint_terms(i, b, zz, zmg, tz, tstart, h, si, sid, siq, sigamma):
+    """Event i's offspring integral (returned) and gradient (into h), given its spatial
+    integral si and that integral's D, q, gamma derivatives. Adds the Omori time part."""
     a2 = b[1] ** 2
     c = b[2] ** 2
     alfa = b[3] ** 2
     p = b[4] ** 2
-    d = b[5] ** 2
-    q = b[6] ** 2
-    gamma = b[7] ** 2
 
     if zz[i] > tstart:
         ttemp = tz - zz[i]
@@ -320,9 +327,6 @@ def xint_fast(i, b, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, h, ndiv=NDIV, ep
         gi = gi2 - gi1
         gic = gic2 - gic1
         gip = gip2 - gip1
-
-    si, sid, siq, sigamma = polyint_etas4(gamma, d, q, zmg[i], tx, ty, npoly, xx[i], yy[i],
-                                          ndiv, eps, eps_r)
 
     sk = a2 * math.exp(alfa * zmg[i])
     fv = sk * gi * si
@@ -493,7 +497,14 @@ def func15_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart,
                          eps_r)
         for k in range(8):
             xg[i, k] = g[k]
+    return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)
 
+
+@njit(cache=True)
+def _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg):
+    """-log L and gradient from per-event slots, summed in index order so that the result
+    does not depend on the thread count."""
+    nn = ind.shape[0]
     ff = 0.0
     df = np.zeros(8)
     fv0 = 0.0
@@ -607,3 +618,150 @@ def sample_parents_par(x, zbkgd, xx, yy, zz, zmg, u):
     for i in prange(xx.shape[0]):
         out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i])
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Polygon integrals by Gauss-Legendre quadrature in s ("s-GL", the default). Each edge adds
+# sign * int F(r) dphi, with phi the angle seen from the kernel centre. Measuring position
+# along the edge's line from the foot of the perpendicular, t = h sinh(s) gives
+#     r = h cosh(s),    dphi = ds / cosh(s).
+# F changes on a log scale of r, so it is smooth in s however close the centre is to the
+# edge, and a few dozen nodes per edge replace thousands of equal-length pieces. No angle is
+# ever computed from side lengths, which removes the rounding failure of acos at small
+# angles. Nodes depend only on geometry, so -log L stays smooth in the parameters.
+# Not bit-identical to the Fortran: the "original" preset keeps the equal-length pieces.
+# ---------------------------------------------------------------------------------------
+
+@lru_cache(maxsize=8)
+def gauss_nodes(n):
+    """Gauss-Legendre nodes and weights on [-1, 1]."""
+    return np.polynomial.legendre.leggauss(n)
+
+
+@njit(cache=True)
+def _edge_sgl(x1, y1, x2, y2, xc, yc):
+    """(sign, h, s at start, s at end). Sign 0: the centre is on the edge's line, no angle
+    is swept and the edge adds nothing."""
+    dx, dy = x2 - x1, y2 - y1
+    L = math.sqrt(dx * dx + dy * dy)
+    ax, ay, bx, by = x1 - xc, y1 - yc, x2 - xc, y2 - yc
+    cross = ax * dy - ay * dx
+    if cross == 0.0 or L == 0.0:
+        return 0.0, 0.0, 0.0, 0.0
+    h = abs(cross) / L
+    return ((-1.0 if cross < 0.0 else 1.0), h, math.asinh((ax * dx + ay * dy) / L / h),
+            math.asinh((bx * dx + by * dy) / L / h))
+
+
+@njit(cache=True)
+def polyint_sgl4(gamma, d, q, xmag, xp, yp, npoly, xc, yc, gx, gw):
+    """ETAS kernel over the polygon: the integral and its D, q, gamma derivatives."""
+    ssig = d * math.exp(gamma * xmag)
+    s0 = s1 = s2 = s3 = 0.0
+    for j in range(npoly):
+        sg, h, sa, sb = _edge_sgl(xp[j], yp[j], xp[j + 1], yp[j + 1], xc, yc)
+        if sg == 0.0:
+            continue
+        ds = sb - sa
+        mid = sa + ds * 0.5
+        for k in range(gx.shape[0]):
+            ch = math.cosh(mid + 0.5 * ds * gx[k])
+            a0, a1, a2, a3 = _fr4(h * ch, ssig, d, q, xmag)
+            wt = sg * 0.5 * ds * gw[k] / ch
+            s0 += wt * a0
+            s1 += wt * a1
+            s2 += wt * a2
+            s3 += wt * a3
+    return s0, s1, s2, s3
+
+
+@njit(cache=True)
+def polyint_gauss_sgl(w, xp, yp, npoly, xc, yc, gx, gw):
+    """Gaussian background kernel of bandwidth w over the polygon. F is close to a step in
+    s here, since r^2 grows like cosh^2(s), but real bandwidths need about as many nodes
+    as the ETAS kernel; see configs/jma.toml."""
+    s = 0.0
+    for j in range(npoly):
+        sg, h, sa, sb = _edge_sgl(xp[j], yp[j], xp[j + 1], yp[j + 1], xc, yc)
+        if sg != 0.0:
+            ds = sb - sa
+            mid = sa + 0.5 * ds
+            for k in range(gx.shape[0]):
+                ch = math.cosh(mid + 0.5 * ds * gx[k])
+                s += (sg * 0.5 * ds * gw[k] / ch
+                      * ((1.0 - math.exp(-(h * h * ch * ch) / 2.0 / (w * w))) / 2.0 / PI))
+    return s
+
+
+@njit(cache=True)
+def _bkgd_sgl_event(i, xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, gx, gw):
+    """Sets zbkgd[i]; returns event i's term of xint0."""
+    s = 0.0
+    for j in range(xx.shape[0]):
+        r0 = math.sqrt((xx[j] - xx[i]) ** 2 + (yy[j] - yy[i]) ** 2)
+        s += zprob[j] * dgauss(r0, zbandw[j])
+    zbkgd[i] = s / (tz - tstart)
+    return zprob[i] * polyint_gauss_sgl(zbandw[i], tx, ty, npoly, xx[i], yy[i], gx, gw)
+
+
+@njit(cache=True)
+def bkgdcalc_sgl(xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, gx, gw):
+    """bkgdcalc with s-GL polygon integrals."""
+    s = 0.0
+    for i in range(xx.shape[0]):
+        s += _bkgd_sgl_event(i, xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, gx, gw)
+    return s
+
+
+@njit(cache=True, parallel=True)
+def bkgdcalc_sgl_par(xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, gx, gw):
+    """Parallel bkgdcalc_sgl (same result)."""
+    nn = xx.shape[0]
+    part = np.empty(nn)
+    for i in prange(nn):
+        part[i] = _bkgd_sgl_event(i, xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd,
+                                  gx, gw)
+    s = 0.0
+    for i in range(nn):
+        s += part[i]
+    return s
+
+
+@njit(cache=True)
+def _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw, lam,
+                      lg, xi, xg):
+    """Fills event i's slots for _func15_total."""
+    g = np.empty(8)
+    if ind[i] == 1:
+        lam[i] = xlamb(i, b, zbkgd, xx, yy, zz, zmg, g)
+        for k in range(8):
+            lg[i, k] = g[k]
+    si, sid, siq, sigamma = polyint_sgl4(b[7] ** 2, b[5] ** 2, b[6] ** 2, zmg[i], tx, ty, npoly,
+                                         xx[i], yy[i], gx, gw)
+    xi[i] = _xint_terms(i, b, zz, zmg, tz, tstart, g, si, sid, siq, sigamma)
+    for k in range(8):
+        xg[i, k] = g[k]
+
+
+@njit(cache=True)
+def func15_sgl(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, grad, gx, gw,
+               log_floor=1e-25, log_penalty=100.0):
+    """func15 with s-GL polygon integrals."""
+    nn = xx.shape[0]
+    lam, lg, xi, xg = np.ones(nn), np.zeros((nn, 8)), np.empty(nn), np.empty((nn, 8))
+    for i in range(nn):
+        _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                          lam, lg, xi, xg)
+    return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)
+
+
+@njit(cache=True, parallel=True)
+def func15_sgl_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, grad, gx, gw,
+                   log_floor=1e-25, log_penalty=100.0):
+    """Parallel func15_sgl (same result)."""
+    nn = xx.shape[0]
+    lam, lg, xi, xg = np.ones(nn), np.zeros((nn, 8)), np.empty(nn), np.empty((nn, 8))
+    for i in prange(nn):
+        _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                          lam, lg, xi, xg)
+    return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)

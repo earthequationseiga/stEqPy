@@ -45,16 +45,19 @@ max_inner = 11
 threads = 0                         # 0 = serial; n = Numba threads (same results)
 
 [advanced]
-ndiv = 1000                         # pieces per polygon edge in the spatial integrals
-ndiv_check = true                   # log -log L change when ndiv is doubled (one-off)
+quadrature = "sgl"                  # polygon integrals: "sgl", or "ndiv" (equal-length pieces, original)
+sgl_nodes = 48                      # sgl: nodes per polygon edge, ETAS kernel and derivatives
+sgl_nodes_background = 64           # sgl: nodes per polygon edge, Gaussian background kernel
+ndiv = 1000                         # ndiv: pieces per polygon edge in the spatial integrals
+ndiv_check = true                   # log -log L change when nodes or ndiv are doubled (one-off)
 ndiv_check_tol = 1e-6               #   warn above this relative change
-fast_xint = true                    # fused polygon integrals (same to ~1e-12)
+fast_xint = true                    # ndiv: fused polygon integrals (same to ~1e-12)
 tol = 1e-6                          # optimiser stopping tolerance
 max_sweeps = 10                     # optimiser sweeps of 8 quasi-Newton steps
 ls_step = 0.05                      # line search: first step, shrink and expand factors
 ls_shrink = 0.1
 ls_expand = 2.0
-frint_eps = 1.000000013351432e-10    # skip triangles with |2*area| below this (deg^2)
+frint_eps = 1.000000013351432e-10    # ndiv: skip triangles with |2*area| below this (deg^2)
 frint_eps_r = 9.999999682655225e-21
 log_floor = 1e-25                   # lambda below this scores -log_penalty
 log_penalty = 100.0

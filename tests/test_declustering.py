@@ -37,8 +37,8 @@ def test_matches_driver():
         Catalog(d["xx"], d["yy"], d["zz"], d["zmg"]),
         Region(d["tx"], d["ty"], d["tstart"], d["tz"]),
         ETASParams.from_array(d["b"]),
-        Settings(npp=d["npp"], bwm=f"{d['bwm']!r} deg", schedule=(2,), fast_xint=True,
-                 converge=False, ndiv_check=False),
+        Settings(npp=d["npp"], bwm=f"{d['bwm']!r} deg", schedule=(2,), quadrature="ndiv",
+                 fast_xint=True, converge=False, ndiv_check=False),
     ).fit()
 
     assert np.array_equal(sd.ind, m.ind)

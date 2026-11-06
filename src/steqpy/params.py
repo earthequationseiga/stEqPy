@@ -48,7 +48,8 @@ class ETASParams:
 @dataclass(frozen=True)
 class Settings:
     """Algorithm hyperparameters (TOML tables in config.SECTIONS). Defaults = preset
-    "default"; preset "original" = converge=False, fast_xint=False, ndiv_check=False."""
+    "default"; preset "original" = converge=False, quadrature="ndiv", fast_xint=False,
+    ndiv_check=False."""
     # [model]
     projection: str = "flat"        # "flat" (original) or "laea" (equal-area), see geo
     npp: int = 5                    # background bandwidth = distance to npp-th nearest event
@@ -66,10 +67,13 @@ class Settings:
     # [run]
     threads: int = 0                # 0 = serial loops; >0 = Numba threads (bit-identical)
     # [advanced]
-    ndiv: int = 1000                # pieces per polygon edge in the spatial integrals
-    ndiv_check: bool = True         # one-off: -log L change when ndiv is doubled
+    quadrature: str = "sgl"         # polygon integrals: "sgl" (see kernels) or "ndiv" (original)
+    sgl_nodes: int = 48             # sgl: nodes per polygon edge, ETAS kernel and derivatives
+    sgl_nodes_background: int = 64  # sgl: nodes per polygon edge, Gaussian background kernel
+    ndiv: int = 1000                # quadrature "ndiv": pieces per polygon edge
+    ndiv_check: bool = True         # one-off: -log L change when nodes or ndiv are doubled
     ndiv_check_tol: float = 1e-6    # ...warn above this relative change
-    fast_xint: bool = True          # fused polygon integrals (same result to ~1e-12)
+    fast_xint: bool = True          # quadrature "ndiv": fused integrals (same to ~1e-12)
     tol: float = 1e-6               # optimiser stopping tolerance (gradient/step/rel. f)
     max_sweeps: int = 10            # optimiser: max sweeps of 8 quasi-Newton steps
     ls_step: float = 0.05           # line search: first step, bracketing factors
@@ -87,10 +91,13 @@ class Settings:
             raise ValueError("projection must be 'flat' or 'laea'")
         if self.inner_metric not in METRICS or self.outer_metric not in METRICS:
             raise ValueError(f"convergence metrics must be one of {METRICS}")
-        if (self.npp < 1 or self.ndiv < 1 or self.max_sweeps < 1 or self.max_outer < 1
-                or self.max_inner < 1 or self.chunksize < 1):
-            raise ValueError("need npp, ndiv, max_sweeps, max_outer, max_inner, "
-                             "chunksize >= 1")
+        if self.quadrature not in ("sgl", "ndiv"):
+            raise ValueError("quadrature must be 'sgl' or 'ndiv'")
+        if (self.npp < 1 or self.ndiv < 1 or self.sgl_nodes < 1 or self.sgl_nodes_background < 1
+                or self.max_sweeps < 1 or self.max_outer < 1 or self.max_inner < 1
+                or self.chunksize < 1):
+            raise ValueError("need npp, ndiv, sgl_nodes, sgl_nodes_background, max_sweeps, "
+                             "max_outer, max_inner, chunksize >= 1")
         if min(self.tol, self.outer_tol, self.inner_tol, self.ndiv_check_tol, self.ls_step,
                self.frint_eps, self.frint_eps_r, self.log_floor) <= 0:
             raise ValueError("tolerances, guards and ls_step must be > 0")

@@ -16,8 +16,10 @@ Pieces are separate so each can be swapped or used alone: Catalog (events), Regi
 polygon + target window), ETASParams (the 8 model parameters), Settings (algorithm
 hyperparameters), StochasticDeclustering (the estimation steps), DeclusteringResult (what
 a fit produces). The numerics live in `kernels` (Numba). With preset "original"
-(Settings(converge=False, fast_xint=False, ndiv_check=False)) this reproduces the original
-Fortran bit for bit (validated in tests/test_declustering.py against run.Model).
+(Settings(converge=False, quadrature="ndiv", fast_xint=False, ndiv_check=False)) this
+reproduces the original Fortran bit for bit (validated in tests/test_declustering.py against
+run.Model). The default polygon integrals are more accurate than the original's, so default
+results differ from it slightly (JMA: parameters by up to 3e-6 relative).
 """
 import dataclasses
 import warnings
@@ -111,15 +113,18 @@ class StochasticDeclustering:
         c, s = self.catalog, self.settings
         self.bandwidth = K.bandwcalc(c.x, c.y, s.npp, s.bwm_deg)
 
-    def _bkgd(self, out, ndiv):
+    def _bkgd(self, out, refine=1):
+        """refine multiplies the quadrature size, for check_ndiv."""
         c, r, s = self.catalog, self.region, self.settings
-        return s.kernel("bkgdcalc")(c.x, c.y, self.background_prob, self.bandwidth,
-                                    r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start,
-                                    out, ndiv, s.frint_eps, s.frint_eps_r)
+        args = (c.x, c.y, self.background_prob, self.bandwidth, r.polygon_x, r.polygon_y,
+                r.npoly, r.t_end, r.t_start, out)
+        if s.quadrature == "sgl":
+            return s.kernel("bkgdcalc_sgl")(*args, *K.gauss_nodes(refine * s.sgl_nodes_background))
+        return s.kernel("bkgdcalc")(*args, refine * s.ndiv, s.frint_eps, s.frint_eps_r)
 
     def update_background(self):
         """u(x_i, y_i) = sum_j phi_j g_{h_j}(r_ij) / T and its integral over the region."""
-        self.xint0 = self._bkgd(self.background_rate, self.settings.ndiv)
+        self.xint0 = self._bkgd(self.background_rate)
 
     def update_probabilities(self):
         """phi_i = mu u_i / lambda_i."""
@@ -128,20 +133,23 @@ class StochasticDeclustering:
                                          self.background_rate, c.x, c.y, c.t, c.m,
                                          self.background_prob)
 
-    def _func15(self, sqrt_params, xint0, ndiv):
+    def _func15(self, sqrt_params, xint0, refine=1):
         c, r, s = self.catalog, self.region, self.settings
         grad = np.empty(8)
-        f = s.kernel("func15")(np.asarray(sqrt_params, dtype=np.float64), self.ind,
-                               self.background_rate, xint0, c.x, c.y, c.t, c.m,
-                               r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start, grad,
-                               s.fast_xint, ndiv, s.frint_eps, s.frint_eps_r, s.log_floor,
-                               s.log_penalty)
+        args = (np.asarray(sqrt_params, dtype=np.float64), self.ind, self.background_rate, xint0,
+                c.x, c.y, c.t, c.m, r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start, grad)
+        if s.quadrature == "sgl":
+            f = s.kernel("func15_sgl")(*args, *K.gauss_nodes(refine * s.sgl_nodes), s.log_floor,
+                                       s.log_penalty)
+        else:
+            f = s.kernel("func15")(*args, s.fast_xint, refine * s.ndiv, s.frint_eps,
+                                   s.frint_eps_r, s.log_floor, s.log_penalty)
         return f, list(grad)
 
     def neg_log_likelihood(self, sqrt_params):
         """(-log L, gradient w.r.t. sqrt(params)) with the background held fixed."""
         self.n_likelihood_calls += 1
-        return self._func15(sqrt_params, self.xint0, self.settings.ndiv)
+        return self._func15(sqrt_params, self.xint0)
 
     def maximise(self):
         """Quasi-Newton (DFP) MLE on sqrt(params), which keeps every parameter positive."""
@@ -159,19 +167,21 @@ class StochasticDeclustering:
 
     def check_ndiv(self):
         """Relative change of -log L (current params and background) when the polygon
-        edges are cut into 2*ndiv pieces instead of ndiv. Large = quadrature too coarse
-        for the narrowest kernels near the boundary."""
+        quadrature size is doubled (sgl nodes, or ndiv pieces). Large = quadrature too
+        coarse for the narrowest kernels near the boundary."""
         s = self.settings
         sq = np.sqrt(self.params.to_array())
-        x2 = self._bkgd(np.empty(len(self.catalog)), 2 * s.ndiv)
-        f1 = self._func15(sq, self.xint0, s.ndiv)[0]
-        f2 = self._func15(sq, x2, 2 * s.ndiv)[0]
+        x2 = self._bkgd(np.empty(len(self.catalog)), 2)
+        f1 = self._func15(sq, self.xint0)[0]
+        f2 = self._func15(sq, x2, 2)[0]
         self.ndiv_error = abs(f2 - f1) / abs(f2)
-        self.log(f" ndiv check: -log L {f1:.10f} (ndiv {s.ndiv}) vs {f2:.10f} "
-                 f"(ndiv {2 * s.ndiv}): relative change {self.ndiv_error:.2e}")
+        name = "sgl_nodes" if s.quadrature == "sgl" else "ndiv"
+        size = s.sgl_nodes if s.quadrature == "sgl" else s.ndiv
+        self.log(f" {name} check: -log L {f1:.10f} ({name} {size}) vs {f2:.10f} "
+                 f"({name} {2 * size}): relative change {self.ndiv_error:.2e}")
         if self.ndiv_error > s.ndiv_check_tol:
-            warnings.warn(f"ndiv={s.ndiv} changes -log L by {self.ndiv_error:.1e} when "
-                          f"doubled (> {s.ndiv_check_tol}): consider a larger ndiv")
+            warnings.warn(f"{name}={size} changes -log L by {self.ndiv_error:.1e} when "
+                          f"doubled (> {s.ndiv_check_tol}): consider a larger {name}")
 
     def _change(self, metric, ref):
         """(change, new reference) for a convergence test; ref None = first evaluation.
@@ -180,7 +190,7 @@ class StochasticDeclustering:
         if metric == "dphi":
             ch = np.inf if ref is None else float(np.max(np.abs(self.background_prob - ref)))
             return ch, self.background_prob.copy()
-        f = self._func15(np.sqrt(self.params.to_array()), self.xint0, self.settings.ndiv)[0]
+        f = self._func15(np.sqrt(self.params.to_array()), self.xint0)[0]
         return (np.inf if ref is None else abs(f - ref) / abs(f)), f
 
     def fit(self):
