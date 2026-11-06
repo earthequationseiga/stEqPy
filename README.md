@@ -30,6 +30,11 @@ result = sd.fit()
 result.params             # fitted ETAS parameters
 result.background_prob    # P(event i is a background event), per event
 lon, lat, rates = result.rate_grid()
+
+result.sample_background(seed=1)   # one declustered catalogue: boolean mask, True = background
+result.sample_parents(seed=1)      # one family tree: parent index per event, -1 = background
+result.triggering_probs(i)         # P(each earlier event triggered event i)
+
 result.write_outputs("results/jma")
 ```
 

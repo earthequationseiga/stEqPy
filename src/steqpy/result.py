@@ -1,11 +1,13 @@
 """What a fit produces: a snapshot of the estimates, plus rate maps and output files."""
 import dataclasses
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 
 from . import config
+from . import kernels as K
 from .catalog import Catalog, Region
 from .params import ETASParams, Settings
 
@@ -30,6 +32,47 @@ class DeclusteringResult:
     grid: dict = None               # {"lon": [a, b], "lat": [a, b], "n": [.,.]}
     config: dict = None             # resolved config, when built by from_config
 
+    # -- declustering outputs ------------------------------------------------------------
+    @cached_property
+    def final_background_prob(self):
+        """phi_i at the final parameters. background_prob (probs.dat) is from before the last
+        MLE step, as in the original; the outputs below use the final parameters, as the
+        original's pmatr.dat does, so that phi_i + sum_j rho_ij = 1."""
+        c = self.catalog
+        out = np.empty(len(c))
+        self.settings.use_threads()
+        self.settings.kernel("probcalc")(np.sqrt(self.params.to_array()), self.background_rate,
+                                         c.x, c.y, c.t, c.m, out)
+        return out
+
+    def triggering_probs(self, i):
+        """rho_ij, j < i: the probability that earlier event j triggered event i, in an array
+        of length i. Computed on demand, so all pairs need not be held in memory."""
+        c = self.catalog
+        if not 0 <= i < len(c):
+            raise IndexError(f"event {i} out of range for {len(c)} events")
+        rates = np.empty(i)
+        bk = K.trigger_terms(i, np.sqrt(self.params.to_array()), self.background_rate,
+                             c.x, c.y, c.t, c.m, rates)
+        return rates / (bk + rates.sum())
+
+    def sample_background(self, seed=None):
+        """One random declustered catalogue: a boolean mask over all events, True = background
+        (Algorithm 2 of Zhuang et al. 2002). Includes non-targets: combine with
+        `ind == 1` to keep only the target events."""
+        phi = self.final_background_prob
+        return np.random.default_rng(seed).random(len(phi)) < phi
+
+    def sample_parents(self, seed=None):
+        """One random family tree: each event's parent index, -1 = background (Algorithm 3 of
+        Zhuang et al. 2004). The same seed gives the same tree at any thread count."""
+        c = self.catalog
+        u = np.random.default_rng(seed).random(len(c))
+        self.settings.use_threads()
+        return self.settings.kernel("sample_parents")(
+            np.sqrt(self.params.to_array()), self.background_rate, c.x, c.y, c.t, c.m, u)
+
+    # -- rate maps and output files ------------------------------------------------------
     def rates(self, gx, gy):
         """(len(gx)*len(gy), 3): background rate, unweighted kernel density, total
         intensity at t_end, x-major. gx, gy in model coordinates."""

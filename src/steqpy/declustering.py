@@ -8,6 +8,9 @@ background; the model details follow that code).
     result.params                 # ETASParams (MLE)
     result.background_prob        # P(event i is a background event), per event
     lon, lat, r = result.rate_grid()   # background / kernel density / total intensity
+    result.sample_background(seed=1)   # one declustered catalogue, as a boolean mask
+    result.sample_parents(seed=1)      # one family tree: parent index, -1 = background
+    result.triggering_probs(i)         # P(each earlier event triggered event i)
 
 Pieces are separate so each can be swapped or used alone: Catalog (events), Region (study
 polygon + target window), ETASParams (the 8 model parameters), Settings (algorithm

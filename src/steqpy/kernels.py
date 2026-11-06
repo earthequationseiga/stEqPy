@@ -547,3 +547,63 @@ def outrates_points_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
     for k in prange(px.shape[0]):
         out[k] = _rates_at(px[k], py[k], x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart)
     return out
+
+
+@njit(cache=True)
+def trigger_terms(i, x, zbkgd, xx, yy, zz, zmg, out):
+    """The terms of lambda at event i (as outpmat in etas8p.f): out[j] = rate triggered by
+    each earlier event j, returns the background term mu*u_i. O(i)."""
+    a2 = x[1] ** 2
+    c = x[2] ** 2
+    alfa = x[3] ** 2
+    p = x[4] ** 2
+    d = x[5] ** 2
+    q = x[6] ** 2
+    gamma = x[7] ** 2
+    for j in range(i):
+        delt = zz[i] - zz[j]
+        pr1 = math.exp(alfa * zmg[j])
+        ssig = d * math.exp(gamma * zmg[j])
+        bbb = (q - 1) / PI / ssig
+        dist2 = (xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2
+        pr2 = (p - 1) / c * (1.0 + delt / c) ** (-p)
+        pr3 = bbb * (dist2 / ssig + 1.0) ** (-q)
+        out[j] = a2 * pr1 * pr2 * pr3
+    return zbkgd[i] * x[0] * x[0]
+
+
+@njit(cache=True)
+def _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u):
+    """Inverse-CDF draw from (phi_i, rho_i0, ..., rho_i,i-1) with u in [0, 1): the parent's
+    index, or -1 = background. Scaling u by lambda saves dividing every term by it."""
+    rates = np.empty(i)
+    s = trigger_terms(i, x, zbkgd, xx, yy, zz, zmg, rates)
+    target = s
+    for j in range(i):
+        target += rates[j]
+    target *= u
+    if target < s:
+        return -1
+    for j in range(i):
+        s += rates[j]
+        if target < s:
+            return j
+    return i - 1                # only if rounding left target at the very top
+
+
+@njit(cache=True)
+def sample_parents(x, zbkgd, xx, yy, zz, zmg, u):
+    """One parent per event from the uniforms u (Algorithm 3 of Zhuang et al. 2002)."""
+    out = np.empty(xx.shape[0], dtype=np.int64)
+    for i in range(xx.shape[0]):
+        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i])
+    return out
+
+
+@njit(cache=True, parallel=True)
+def sample_parents_par(x, zbkgd, xx, yy, zz, zmg, u):
+    """Parallel sample_parents (same result: the uniforms are fixed before the loop)."""
+    out = np.empty(xx.shape[0], dtype=np.int64)
+    for i in prange(xx.shape[0]):
+        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i])
+    return out
