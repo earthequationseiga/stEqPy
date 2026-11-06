@@ -1,5 +1,5 @@
 # Stochastic declustering of the JMA M>=4.5 example. Every setting is shown with its default;
-# delete what you don't change. Run: python -m etas8py configs/jma.toml --out results/jma
+# delete what you don't change. Run: python -m steqpy configs/jma.toml --out results/jma
 preset = "default"                  # "original": bit-exact reproduction of the Fortran
 
 [input]

@@ -4,5 +4,7 @@ from .declustering import StochasticDeclustering
 from .params import FULL_SCHEDULE, ETASParams, Settings
 from .result import DeclusteringResult
 
+__version__ = "0.1.0"
+
 __all__ = ["Catalog", "Region", "ETASParams", "Settings", "StochasticDeclustering",
            "DeclusteringResult", "FULL_SCHEDULE"]

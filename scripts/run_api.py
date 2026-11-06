@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np  # noqa: E402
 
-from etas8py import StochasticDeclustering  # noqa: E402
+from steqpy import StochasticDeclustering  # noqa: E402
 
 if __name__ == "__main__":
     infile, out, threads = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])

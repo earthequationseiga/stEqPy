@@ -9,8 +9,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from etas8py import geo  # noqa: E402
-from etas8py.run import readata  # noqa: E402
+from steqpy import geo  # noqa: E402
+from steqpy.run import readata  # noqa: E402
 
 # JMA polygon from jap.in (lon lat, counter-clockwise)
 JMA = np.array([(134.0, 31.9), (137.9, 33.0), (143.1, 33.2), (144.9, 35.2), (147.8, 41.3),

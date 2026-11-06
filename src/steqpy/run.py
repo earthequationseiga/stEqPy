@@ -2,7 +2,7 @@
 readata, dav, outrates and outprob (etas8p.f, etas8out.f). Kept because it is what ties the
 package to the Fortran: the bit-exact tests compare against it.
 
-Usage:  python -m etas8py.run data/jma/jap.in --out results/python_run [--schedule full|short]
+Usage:  python -m steqpy.run data/jma/jap.in --out results/python_run [--schedule full|short]
 
 Differences from the Fortran (all I/O, none numerical):
 - the per-pass dump of every zprob to stdout is not printed;

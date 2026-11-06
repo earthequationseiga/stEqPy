@@ -41,7 +41,7 @@ stamp "python thread sweep"
 
 stamp "full: run.py fast-xint 10 threads"
 s=$(date +%s)
-"$PY" -I -c "import sys; sys.path.insert(0, 'src'); from etas8py.run import main; main()" \
+"$PY" -I -c "import sys; sys.path.insert(0, 'src'); from steqpy.run import main; main()" \
     data/jma/jap.in --out results/rerun_fast_t10 --fast-xint --threads 10 > "$L/full_run_py.txt" 2>&1
 echo "exit $? wall $(( $(date +%s) - s )) s" | tee -a "$L/full_run_py.txt" "$L/progress.txt"
 

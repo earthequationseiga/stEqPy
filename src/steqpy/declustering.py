@@ -1,8 +1,8 @@
 """The estimator for stochastic declustering: the method of Zhuang, Ogata & Vere-Jones (2002)
 as implemented in Zhuang's etas8p (space-time ETAS with a variable-bandwidth kernel
-background; the model details follow that code, see docs/algorithm_explainer.pdf).
+background; the model details follow that code).
 
-    from etas8py import StochasticDeclustering
+    from steqpy import StochasticDeclustering
     sd = StochasticDeclustering.from_config("configs/jma.toml", threads=8)
     result = sd.fit()
     result.params                 # ETASParams (MLE)

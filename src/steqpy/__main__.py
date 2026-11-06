@@ -1,4 +1,4 @@
-"""python -m etas8py CONFIG.toml --out DIR [--threads N] [--preset original]
+"""python -m steqpy CONFIG.toml --out DIR [--threads N] [--preset original]
 
 Fits the model described by CONFIG (see configs/jma.toml) and writes probs.dat,
 rates.dat, params.txt, config.toml (resolved) and run.log to DIR. Command-line options
@@ -6,14 +6,14 @@ override the file.
 """
 import argparse
 import time
-import tomllib
 from pathlib import Path
 
+from .config import tomllib
 from .declustering import StochasticDeclustering
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="python -m etas8py")
+    ap = argparse.ArgumentParser(prog="python -m steqpy")
     ap.add_argument("config")
     ap.add_argument("--out", required=True)
     ap.add_argument("--threads", type=int)

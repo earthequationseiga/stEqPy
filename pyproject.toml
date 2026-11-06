@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steqpy"
+dynamic = ["version"]
+description = "Fast stochastic declustering of earthquake catalogues (space-time ETAS), a Python/Numba port of Zhuang's etas8p"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "numpy",
+    "numba",
+    "tomli; python_version < '3.11'",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "steqpy.__version__" }

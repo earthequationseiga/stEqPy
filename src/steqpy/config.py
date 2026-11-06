@@ -1,6 +1,6 @@
 """Run configuration: preset < original control file < TOML file < call arguments.
 
-A TOML file (see configs/example.toml) has these tables; every key is optional except
+A TOML file (see configs/jma.toml) has these tables; every key is optional except
 what is needed to find the data:
 
     preset = "default"            # or "original" (bit-exact reproduction of the Fortran)
@@ -13,8 +13,12 @@ what is needed to find the data:
 input/params/grid and npp/bwm/optimise, and anything else in the TOML overrides it.
 Relative paths are relative to the TOML file. Unknown keys are errors (catches typos).
 """
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:     # Python 3.10
+    import tomli as tomllib
 
 from .readers import read_control
 

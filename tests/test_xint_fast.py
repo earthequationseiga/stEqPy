@@ -8,8 +8,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from etas8py import kernels as K  # noqa: E402
-from etas8py.run import readata  # noqa: E402
+from steqpy import kernels as K  # noqa: E402
+from steqpy.run import readata  # noqa: E402
 
 MLE = [0.550609, 0.165757, 0.029615, 1.657859, 1.153379, 0.001834, 1.950475, 1.067001]
 

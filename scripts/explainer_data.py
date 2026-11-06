@@ -6,8 +6,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
-from etas8py import kernels as K
-from etas8py.declustering import StochasticDeclustering as S
+from steqpy import kernels as K
+from steqpy.declustering import StochasticDeclustering as S
 
 sd = S.from_config(ROOT / "configs/jma.toml")
 c, r = sd.catalog, sd.region

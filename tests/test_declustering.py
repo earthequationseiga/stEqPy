@@ -11,9 +11,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from etas8py import Catalog, ETASParams, Region, Settings, StochasticDeclustering  # noqa
-from etas8py import kernels as K  # noqa: E402
-from etas8py.run import Model, readata  # noqa: E402
+from steqpy import Catalog, ETASParams, Region, Settings, StochasticDeclustering  # noqa
+from steqpy import kernels as K  # noqa: E402
+from steqpy.run import Model, readata  # noqa: E402
 
 N = 800
 
@@ -72,8 +72,8 @@ def test_refit_restarts_and_results_are_snapshots():
 
 
 def test_public_api_does_not_load_the_reference_driver():
-    code = (f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); import etas8py; "
-            "assert 'etas8py.run' not in sys.modules")
+    code = (f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); import steqpy; "
+            "assert 'steqpy.run' not in sys.modules")
     subprocess.run([sys.executable, "-I", "-c", code], check=True)
 
 

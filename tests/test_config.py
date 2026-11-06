@@ -14,10 +14,10 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from etas8py import config  # noqa: E402
-from etas8py import (Catalog, ETASParams, Region, Settings,  # noqa: E402
+from steqpy import config  # noqa: E402
+from steqpy import (Catalog, ETASParams, Region, Settings,  # noqa: E402
                      StochasticDeclustering)
-from etas8py.run import readata  # noqa: E402
+from steqpy.run import readata  # noqa: E402
 
 JAP = ROOT / "data/jma/jap.in"
 TOML = ROOT / "configs/jma.toml"

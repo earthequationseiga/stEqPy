@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np  # noqa: E402
 
-from etas8py import kernels as K  # noqa: E402
-from etas8py.run import Model, readata  # noqa: E402
+from steqpy import kernels as K  # noqa: E402
+from steqpy.run import Model, readata  # noqa: E402
 
 
 def steps(m):

@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from etas8py import geo  # noqa: E402
-from etas8py.run import read_control  # noqa: E402
+from steqpy import geo  # noqa: E402
+from steqpy.run import read_control  # noqa: E402
 
 NPP = 5
 
