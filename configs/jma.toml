@@ -26,13 +26,14 @@ lat = [31.8, 44.3]
 n = [401, 401]
 
 [model]
-projection = "flat"                 # "flat" (original) or "laea" (equal-area)
+# Commented keys are the ones preset "original" changes: set here, they would override it.
+# projection = "laea"               # "laea" (equal-area) or "flat" (original)
 npp = 5                             # background bandwidth = distance to npp-th neighbour
 bwm = "0.05 deg"                    # ...floored at bwm. units required: deg or km
 optimise = true                     # false: keep the initial ETAS parameters
 
 [convergence]
-converge = true                     # false: fixed schedule below (the original)
+# converge = true                   # false: fixed schedule below (the original)
 schedule = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]  # inner passes per outer iteration
 outer_metric = "loglik"             # "loglik": relative change of -log L at the MLE
 outer_tol = 1e-8                    #   "dphi": max change of any background probability
@@ -45,13 +46,13 @@ max_inner = 11
 threads = 0                         # 0 = serial; n = Numba threads (same results)
 
 [advanced]
-quadrature = "sgl"                  # polygon integrals: "sgl", or "ndiv" (equal-length pieces, original)
+# quadrature = "sgl"                # polygon integrals: "sgl", or "ndiv" (equal-length pieces, original)
 sgl_nodes = 48                      # sgl: nodes per polygon edge, ETAS kernel and derivatives
 sgl_nodes_background = 64           # sgl: nodes per polygon edge, Gaussian background kernel
 ndiv = 1000                         # ndiv: pieces per polygon edge in the spatial integrals
-ndiv_check = true                   # log -log L change when nodes or ndiv are doubled (one-off)
+# ndiv_check = true                 # log -log L change when nodes or ndiv are doubled (one-off)
 ndiv_check_tol = 1e-6               #   warn above this relative change
-fast_xint = true                    # ndiv: fused polygon integrals (same to ~1e-12)
+# fast_xint = true                  # ndiv: fused polygon integrals (same to ~1e-12)
 tol = 1e-6                          # optimiser stopping tolerance
 max_sweeps = 10                     # optimiser sweeps of 8 quasi-Newton steps
 ls_step = 0.05                      # line search: first step, shrink and expand factors

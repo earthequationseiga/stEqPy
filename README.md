@@ -6,8 +6,9 @@ event is a background event rather than triggered by an earlier one. It also fit
 parameters and the background rate.
 
 With preset `original`, the port reproduced the Fortran outputs bit for bit on the JMA example.
-The default preset uses a faster and more accurate polygon integral, so its results differ
-slightly from the Fortran's (on JMA, parameters by up to 3e-6 relative).
+The default preset differs from the Fortran in two ways. It uses an equal-area projection, which
+moves results most (on JMA, parameters by up to 1.5%, background probabilities by up to 0.09).
+It also uses a faster and more accurate polygon integral (parameters by up to 3e-6 relative).
 
 ## Install
 

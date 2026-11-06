@@ -18,8 +18,8 @@ hyperparameters), StochasticDeclustering (the estimation steps), DeclusteringRes
 a fit produces). The numerics live in `kernels` (Numba). With preset "original"
 (Settings(converge=False, quadrature="ndiv", fast_xint=False, ndiv_check=False)) this
 reproduces the original Fortran bit for bit (validated in tests/test_declustering.py against
-run.Model). The default polygon integrals are more accurate than the original's, so default
-results differ from it slightly (JMA: parameters by up to 3e-6 relative).
+run.Model). Default results differ from it: mainly the equal-area projection (JMA: parameters
+by up to 1.5%, phi by up to 0.09), and slightly the more accurate polygon integrals (3e-6).
 """
 import dataclasses
 import warnings

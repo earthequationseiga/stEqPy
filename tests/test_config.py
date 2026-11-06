@@ -49,6 +49,9 @@ def test_inputs_match_readata():
     assert not s.converge and not s.fast_xint and not s.ndiv_check
     sd2 = StochasticDeclustering.from_config(TOML, preset="original")   # explicit inputs
     same_as_readata(sd2, d)
+    s2 = sd2.settings       # the shipped config must not override what the preset sets
+    assert (s2.projection == "flat" and s2.quadrature == "ndiv" and not s2.converge
+            and not s2.fast_xint and not s2.ndiv_check)
     lon, lat, r = sd2.grid["lon"], sd2.grid["lat"], d["grid"]
     assert sd2.grid["n"] == [r[0], r[1]] and lat == [r[4], r[5]]
     assert np.allclose(np.array(lon) * sd2.projection.cosm, r[2:4], rtol=0, atol=1e-13)

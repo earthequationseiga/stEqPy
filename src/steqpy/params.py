@@ -51,7 +51,7 @@ class Settings:
     "default"; preset "original" = converge=False, quadrature="ndiv", fast_xint=False,
     ndiv_check=False."""
     # [model]
-    projection: str = "flat"        # "flat" (original) or "laea" (equal-area), see geo
+    projection: str = "laea"        # "laea" (equal-area) or "flat" (original), see geo
     npp: int = 5                    # background bandwidth = distance to npp-th nearest event
     bwm: str = "0.05 deg"           # ...floored at bwm; units required ("deg" or "km")
     optimise: bool = True           # False: keep the initial ETAS parameters fixed
