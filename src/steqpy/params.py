@@ -70,6 +70,7 @@ class Settings:
     quadrature: str = "sgl"         # polygon integrals: "sgl" (see kernels) or "ndiv" (original)
     sgl_nodes: int = 48             # sgl: nodes per polygon edge, ETAS kernel and derivatives
     sgl_nodes_background: int = 64  # sgl: nodes per polygon edge, Gaussian background kernel
+    xlamb: str = "logs"             # sgl: "logs" (fastest), "cache" (same bits as the 1:1 sum)
     ndiv: int = 1000                # quadrature "ndiv": pieces per polygon edge
     ndiv_check: bool = True         # one-off: -log L change when nodes or ndiv are doubled
     ndiv_check_tol: float = 1e-6    # ...warn above this relative change
@@ -93,6 +94,8 @@ class Settings:
             raise ValueError(f"convergence metrics must be one of {METRICS}")
         if self.quadrature not in ("sgl", "ndiv"):
             raise ValueError("quadrature must be 'sgl' or 'ndiv'")
+        if self.xlamb not in ("logs", "cache"):
+            raise ValueError("xlamb must be 'logs' or 'cache'")
         if (self.npp < 1 or self.ndiv < 1 or self.sgl_nodes < 1 or self.sgl_nodes_background < 1
                 or self.max_sweeps < 1 or self.max_outer < 1 or self.max_inner < 1
                 or self.chunksize < 1):
@@ -123,6 +126,11 @@ class Settings:
     def kernel(self, name):
         """The Numba routine `name`: its parallel version if threads are on."""
         return getattr(K, name + "_par") if self.threads > 0 else getattr(K, name)
+
+    def probcalc(self):
+        """The probability kernel. Value-only gives the same bits as the 1:1 one, which only
+        the "ndiv" path keeps, so that "original" runs the validated code."""
+        return self.kernel("probcalc_value" if self.quadrature == "sgl" else "probcalc")
 
     def use_threads(self):
         # process-global: the last fit()/rates() call decides for every instance

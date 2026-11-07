@@ -41,8 +41,8 @@ class DeclusteringResult:
         c = self.catalog
         out = np.empty(len(c))
         self.settings.use_threads()
-        self.settings.kernel("probcalc")(np.sqrt(self.params.to_array()), self.background_rate,
-                                         c.x, c.y, c.t, c.m, out)
+        self.settings.probcalc()(np.sqrt(self.params.to_array()), self.background_rate,
+                                 c.x, c.y, c.t, c.m, out)
         return out
 
     def triggering_probs(self, i):

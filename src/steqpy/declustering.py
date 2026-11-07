@@ -129,9 +129,8 @@ class StochasticDeclustering:
     def update_probabilities(self):
         """phi_i = mu u_i / lambda_i."""
         c = self.catalog
-        self.settings.kernel("probcalc")(np.sqrt(self.params.to_array()),
-                                         self.background_rate, c.x, c.y, c.t, c.m,
-                                         self.background_prob)
+        self.settings.probcalc()(np.sqrt(self.params.to_array()), self.background_rate, c.x, c.y,
+                                 c.t, c.m, self.background_prob)
 
     def _func15(self, sqrt_params, xint0, refine=1):
         c, r, s = self.catalog, self.region, self.settings
@@ -140,7 +139,7 @@ class StochasticDeclustering:
                 c.x, c.y, c.t, c.m, r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start, grad)
         if s.quadrature == "sgl":
             f = s.kernel("func15_sgl")(*args, *K.gauss_nodes(refine * s.sgl_nodes), s.log_floor,
-                                       s.log_penalty)
+                                       s.log_penalty, s.xlamb == "logs")
         else:
             f = s.kernel("func15")(*args, s.fast_xint, refine * s.ndiv, s.frint_eps,
                                    s.frint_eps_r, s.log_floor, s.log_penalty)

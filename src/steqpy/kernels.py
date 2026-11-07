@@ -727,13 +727,155 @@ def bkgdcalc_sgl_par(xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, gx
     return s
 
 
+# ---------------------------------------------------------------------------------------
+# Cheaper lambda sums, with every pair kept. Cutoffs do not work here: Omori decay is too
+# slow (p - 1 = 0.15 on JMA) for dropped pairs to stay negligible. Used with s-GL only; the
+# 1:1 xlamb above stays for the bit-exact "original" path.
+# ---------------------------------------------------------------------------------------
+
+@njit(cache=True)
+def _parent_terms(b, zmg):
+    """exp(alpha m_j), ssig_j and (q-1)/ssig_j/pi depend only on the parent, so they are
+    computed once per call rather than once per pair. Same expressions as xlamb."""
+    alfa, d, q, gamma = b[3] ** 2, b[5] ** 2, b[6] ** 2, b[7] ** 2
+    n = zmg.shape[0]
+    pr1, ssig, bbb = np.empty(n), np.empty(n), np.empty(n)
+    for j in range(n):
+        pr1[j] = math.exp(alfa * zmg[j])
+        ssig[j] = d * math.exp(gamma * zmg[j])
+        bbb[j] = (q - 1) / ssig[j] / PI
+    return pr1, ssig, bbb
+
+
+@njit(cache=True)
+def xlamb_cache(i, b, zbkgd, xx, yy, zz, zmg, g1, pr1c, ssigc, bbbc):
+    """xlamb with _parent_terms: bit-identical to xlamb."""
+    xmu = b[0] ** 2
+    a2 = b[1] ** 2
+    c = b[2] ** 2
+    p = b[4] ** 2
+    d = b[5] ** 2
+    q = b[6] ** 2
+    s = xmu * zbkgd[i]
+    sg1 = zbkgd[i]
+    sg2 = sg3 = sg4 = sg5 = sg6 = sg7 = sg8 = 0.0
+    for j in range(i):
+        delt = zz[i] - zz[j]
+        pr1 = pr1c[j]
+        pr2 = (p - 1) / c * (1.0 + delt / c) ** (-p)
+        ssig = ssigc[j]
+        dist2 = (xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2
+        pr3 = bbbc[j] * (dist2 / ssig + 1.0) ** (-q)
+
+        s += a2 * pr1 * pr2 * pr3
+        sg2 += pr1 * pr2 * pr3
+        pr2_c = pr2 * (-1.0 / c - p / (c + delt) + p / c)
+        sg3 += a2 * pr1 * pr2_c * pr3
+        pr1_alfa = pr1 * zmg[j]
+        sg4 += a2 * pr1_alfa * pr2 * pr3
+        pr2_p = pr2 * (1.0 / (p - 1) - math.log(1.0 + delt / c))
+        sg5 += a2 * pr1 * pr2_p * pr3
+        pr3_d = pr3 / d * (-1.0 + q * (1.0 - 1.0 / (1.0 + dist2 / ssig)))
+        sg6 += a2 * pr1 * pr2 * pr3_d
+        pr3_q = pr3 * (1.0 / (q - 1) - math.log(1 + dist2 / ssig))
+        sg7 += a2 * pr1 * pr2 * pr3_q
+        pr3_gamma = pr3 * (-zmg[j] + q * zmg[j] * (1.0 - 1.0 / (1.0 + dist2 / ssig)))
+        sg8 += a2 * pr1 * pr2 * pr3_gamma
+    g1[0] = sg1 * 2 * b[0]
+    g1[1] = sg2 * 2 * b[1]
+    g1[2] = sg3 * 2 * b[2]
+    g1[3] = sg4 * 2 * b[3]
+    g1[4] = sg5 * 2 * b[4]
+    g1[5] = sg6 * 2 * b[5]
+    g1[6] = sg7 * 2 * b[6]
+    g1[7] = sg8 * 2 * b[7]
+    return s
+
+
+@njit(cache=True)
+def xlamb_logs(i, b, zbkgd, xx, yy, zz, zmg, g1, pr1c, ssigc, bbbc):
+    """xlamb_cache that also reuses the logs the gradient needs: x^-p y^-q = exp(-p log x -
+    q log y), so 2 pow + 2 log become 2 log + 1 exp. About twice as fast. Rounding differs:
+    lambda by at most ~10 ulp on JMA."""
+    xmu = b[0] ** 2
+    a2 = b[1] ** 2
+    c = b[2] ** 2
+    p = b[4] ** 2
+    d = b[5] ** 2
+    q = b[6] ** 2
+    pc = (p - 1) / c
+    t1, t2, t3 = -1.0 / c + p / c, 1.0 / (p - 1), 1.0 / (q - 1)
+    s = xmu * zbkgd[i]
+    sg1 = zbkgd[i]
+    sg2 = sg3 = sg4 = sg5 = sg6 = sg7 = sg8 = 0.0
+    for j in range(i):
+        delt = zz[i] - zz[j]
+        l1 = math.log(1.0 + delt / c)
+        mj = zmg[j]
+        ratio = (((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / ssigc[j])
+        l2 = math.log(1.0 + ratio)
+        tt = pr1c[j] * pc * bbbc[j] * math.exp(-p * l1 - q * l2)
+        t = a2 * tt
+        v = q * (1.0 - 1.0 / (1.0 + ratio))
+        s += t
+        sg2 += tt
+        sg3 += t * (t1 - p / (c + delt))
+        sg4 += t * mj
+        sg5 += t * (t2 - l1)
+        sg6 += t / d * (-1.0 + v)
+        sg7 += t * (t3 - l2)
+        sg8 += t * mj * (v - 1.0)
+    g1[0] = sg1 * 2 * b[0]
+    g1[1] = sg2 * 2 * b[1]
+    g1[2] = sg3 * 2 * b[2]
+    g1[3] = sg4 * 2 * b[3]
+    g1[4] = sg5 * 2 * b[4]
+    g1[5] = sg6 * 2 * b[5]
+    g1[6] = sg7 * 2 * b[6]
+    g1[7] = sg8 * 2 * b[7]
+    return s
+
+
+@njit(cache=True)
+def _xlamb_value(i, b, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc):
+    """xlamb's value without the gradient: bit-identical value."""
+    a2, c, p, q = b[1] ** 2, b[2] ** 2, b[4] ** 2, b[6] ** 2
+    s = b[0] ** 2 * zbkgd[i]
+    for j in range(i):
+        delt = zz[i] - zz[j]
+        pr2 = (p - 1) / c * (1.0 + delt / c) ** (-p)
+        dist2 = (xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2
+        pr3 = bbbc[j] * (dist2 / ssigc[j] + 1.0) ** (-q)
+        s += a2 * pr1c[j] * pr2 * pr3
+    return s
+
+
+@njit(cache=True)
+def probcalc_value(x, zbkgd, xx, yy, zz, zmg, zprob):
+    """probcalc without the unused gradient (same result)."""
+    pr1c, ssigc, bbbc = _parent_terms(x, zmg)
+    for i in range(xx.shape[0]):
+        zprob[i] = zbkgd[i] * x[0] * x[0] / _xlamb_value(i, x, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc)
+
+
+@njit(cache=True, parallel=True)
+def probcalc_value_par(x, zbkgd, xx, yy, zz, zmg, zprob):
+    """Parallel probcalc_value (same result)."""
+    pr1c, ssigc, bbbc = _parent_terms(x, zmg)
+    for i in prange(xx.shape[0]):
+        zprob[i] = zbkgd[i] * x[0] * x[0] / _xlamb_value(i, x, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc)
+
+
 @njit(cache=True)
 def _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw, lam,
-                      lg, xi, xg):
+                      lg, xi, xg, use_logs, pr1c, ssigc, bbbc):
     """Fills event i's slots for _func15_total."""
     g = np.empty(8)
     if ind[i] == 1:
-        lam[i] = xlamb(i, b, zbkgd, xx, yy, zz, zmg, g)
+        if use_logs:
+            lam[i] = xlamb_logs(i, b, zbkgd, xx, yy, zz, zmg, g, pr1c, ssigc, bbbc)
+        else:
+            lam[i] = xlamb_cache(i, b, zbkgd, xx, yy, zz, zmg, g, pr1c, ssigc, bbbc)
         for k in range(8):
             lg[i, k] = g[k]
     si, sid, siq, sigamma = polyint_sgl4(b[7] ** 2, b[5] ** 2, b[6] ** 2, zmg[i], tx, ty, npoly,
@@ -745,23 +887,25 @@ def _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tsta
 
 @njit(cache=True)
 def func15_sgl(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, grad, gx, gw,
-               log_floor=1e-25, log_penalty=100.0):
-    """func15 with s-GL polygon integrals."""
+               log_floor=1e-25, log_penalty=100.0, use_logs=True):
+    """func15 with s-GL polygon integrals. use_logs: xlamb_logs, else xlamb_cache."""
     nn = xx.shape[0]
     lam, lg, xi, xg = np.ones(nn), np.zeros((nn, 8)), np.empty(nn), np.empty((nn, 8))
+    pr1c, ssigc, bbbc = _parent_terms(b, zmg)
     for i in range(nn):
         _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
-                          lam, lg, xi, xg)
+                          lam, lg, xi, xg, use_logs, pr1c, ssigc, bbbc)
     return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)
 
 
 @njit(cache=True, parallel=True)
 def func15_sgl_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, grad, gx, gw,
-                   log_floor=1e-25, log_penalty=100.0):
+                   log_floor=1e-25, log_penalty=100.0, use_logs=True):
     """Parallel func15_sgl (same result)."""
     nn = xx.shape[0]
     lam, lg, xi, xg = np.ones(nn), np.zeros((nn, 8)), np.empty(nn), np.empty((nn, 8))
+    pr1c, ssigc, bbbc = _parent_terms(b, zmg)
     for i in prange(nn):
         _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
-                          lam, lg, xi, xg)
+                          lam, lg, xi, xg, use_logs, pr1c, ssigc, bbbc)
     return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)

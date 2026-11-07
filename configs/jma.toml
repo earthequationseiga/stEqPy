@@ -49,6 +49,7 @@ threads = 0                         # 0 = serial; n = Numba threads (same result
 # quadrature = "sgl"                # polygon integrals: "sgl", or "ndiv" (equal-length pieces, original)
 sgl_nodes = 48                      # sgl: nodes per polygon edge, ETAS kernel and derivatives
 sgl_nodes_background = 64           # sgl: nodes per polygon edge, Gaussian background kernel
+xlamb = "logs"                      # sgl: "logs" (about 1.5x faster), "cache" (same bits as the 1:1 sum)
 ndiv = 1000                         # ndiv: pieces per polygon edge in the spatial integrals
 # ndiv_check = true                 # log -log L change when nodes or ndiv are doubled (one-off)
 ndiv_check_tol = 1e-6               #   warn above this relative change

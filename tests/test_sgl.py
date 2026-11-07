@@ -130,10 +130,54 @@ def test_gradient_and_threads():
         assert abs(g1[k] - fd) < 1e-5 * max(1.0, abs(fd)), (k, g1[k], fd)
 
 
+def test_cheaper_lambda_sums():
+    """cache and value-only: same bits as xlamb. logs: rounding only, and its gradient is
+    the gradient of its own value. Serial == parallel for both."""
+    d, _, cat, reg = small()
+    sd = StochasticDeclustering(cat, reg, ETASParams.from_array(d["b"]), Settings(threads=2))
+    sd.settings.use_threads()
+    sd.compute_bandwidths()
+    args = (cat.x, cat.y, sd.background_prob, sd.bandwidth, reg.polygon_x, reg.polygon_y, reg.npoly,
+            reg.t_end, reg.t_start)
+    u = np.empty(len(cat))
+    xint0 = K.bkgdcalc_sgl(*args, u, *K.gauss_nodes(64))
+    b = np.sqrt(np.array(d["b"], dtype=float))
+    a = (cat.x, cat.y, cat.t, cat.m)
+    terms = K._parent_terms(b, cat.m)
+    for i in range(1, len(cat), 17):
+        g0, g1, g2 = np.empty(8), np.empty(8), np.empty(8)
+        v0 = K.xlamb(i, b, u, *a, g0)
+        assert K.xlamb_cache(i, b, u, *a, g1, *terms) == v0 and np.array_equal(g0, g1)
+        assert K._xlamb_value(i, b, u, cat.x, cat.y, cat.t, *terms) == v0
+        assert abs(K.xlamb_logs(i, b, u, *a, g2, *terms) / v0 - 1) < 1e-14
+        assert np.max(np.abs(g2 - g0) / (np.abs(g0) + 1e-300)) < 1e-10
+    p0, p1, p2 = np.empty(len(cat)), np.empty(len(cat)), np.empty(len(cat))
+    K.probcalc(b, u, *a, p0)
+    K.probcalc_value(b, u, *a, p1)
+    K.probcalc_value_par(b, u, *a, p2)
+    assert np.array_equal(p0, p1) and np.array_equal(p0, p2)
+
+    nodes = K.gauss_nodes(48)
+    tail = (sd.ind, u, xint0, *a, reg.polygon_x, reg.polygon_y, reg.npoly, reg.t_end, reg.t_start)
+    for logs in (True, False):
+        g1, g2 = np.empty(8), np.empty(8)
+        f1 = K.func15_sgl(b, *tail, g1, *nodes, 1e-25, 100.0, logs)
+        f2 = K.func15_sgl_par(b, *tail, g2, *nodes, 1e-25, 100.0, logs)
+        assert f1 == f2 and np.array_equal(g1, g2)
+        for k in range(8):
+            e = 1e-6 * b[k]
+            bp, bm = b.copy(), b.copy()
+            bp[k] += e
+            bm[k] -= e
+            fd = (K.func15_sgl(bp, *tail, np.empty(8), *nodes, 1e-25, 100.0, logs)
+                  - K.func15_sgl(bm, *tail, np.empty(8), *nodes, 1e-25, 100.0, logs)) / (2 * e)
+            assert abs(g1[k] - fd) < 1e-5 * max(1.0, abs(fd)), (logs, k, g1[k], fd)
+
+
 def test_settings_and_agreement_with_original_quadrature():
-    assert Settings().quadrature == "sgl"
+    assert Settings().quadrature == "sgl" and Settings().xlamb == "logs"
     assert config.PRESETS["original"]["quadrature"] == "ndiv"
-    for bad in (dict(quadrature="x"), dict(sgl_nodes=0), dict(sgl_nodes_background=0)):
+    for bad in (dict(quadrature="x"), dict(sgl_nodes=0), dict(sgl_nodes_background=0), dict(xlamb="x")):
         try:
             Settings(**bad)
         except ValueError:
@@ -154,5 +198,6 @@ if __name__ == "__main__":
     test_q_integrand_against_finite_difference()
     test_gaussian()
     test_gradient_and_threads()
+    test_cheaper_lambda_sums()
     test_settings_and_agreement_with_original_quadrature()
     print("ok")
