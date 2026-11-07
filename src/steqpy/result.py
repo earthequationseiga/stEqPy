@@ -31,6 +31,7 @@ class DeclusteringResult:
     projection: object = None       # geo.Projection, for lon/lat outputs
     grid: dict = None               # {"lon": [a, b], "lat": [a, b], "n": [.,.]}
     config: dict = None             # resolved config, when built by from_config
+    checks: dict = None             # StochasticDeclustering.check_fit; "failed" lists problems
 
     # -- declustering outputs ------------------------------------------------------------
     @cached_property

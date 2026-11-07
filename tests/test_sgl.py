@@ -5,8 +5,10 @@
 - func15_sgl's gradient matches finite differences of its value; serial == parallel.
 - Preset "original" stays on the equal-length pieces.
 Run: python -I tests/test_sgl.py"""
+import dataclasses
 import math
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -174,6 +176,86 @@ def test_cheaper_lambda_sums():
             assert abs(g1[k] - fd) < 1e-5 * max(1.0, abs(fd)), (logs, k, g1[k], fd)
 
 
+def test_value_only_f_has_the_same_bits():
+    """The line search must see exactly funct's f, or the fit's path changes. Includes a start
+    with p, q < 1, floored lambdas, and events before and after tstart."""
+    d, _, cat, reg = small()
+    sd = StochasticDeclustering(cat, reg, ETASParams.from_array(d["b"]), Settings(threads=2))
+    sd.settings.use_threads()
+    sd.compute_bandwidths()
+    u = np.empty(len(cat))
+    xint0 = K.bkgdcalc_sgl(cat.x, cat.y, sd.background_prob, sd.bandwidth, reg.polygon_x,
+                           reg.polygon_y, reg.npoly, reg.t_end, reg.t_start, u, *K.gauss_nodes(64))
+    assert (cat.t <= reg.t_start).any() and (cat.t > reg.t_start).any()
+    fitted = np.array(d["b"], dtype=float)
+    rng = np.random.default_rng(1)
+    below = fitted.copy()
+    below[[4, 6]] = 0.9
+    tiny = fitted * [1e-60, 1e-60, 1, 1, 1, 1, 1, 1]
+    points = [fitted, below, tiny] + [fitted * rng.uniform(0.7, 1.3, 8) for _ in range(5)]
+    tail = (sd.ind, u, xint0, cat.x, cat.y, cat.t, cat.m, reg.polygon_x, reg.polygon_y,
+            reg.npoly, reg.t_end, reg.t_start)
+    for th in points:
+        b = np.sqrt(th)
+        for nodes in (K.gauss_nodes(48), K.gauss_nodes(7)):
+            for logs in (True, False):
+                f = K.func15_sgl(b, *tail, np.empty(8), *nodes, 1e-25, 100.0, logs)
+                assert K.func15_sgl_value(b, *tail, *nodes, 1e-25, 100.0, logs) == f
+                assert K.func15_sgl_value_par(b, *tail, *nodes, 1e-25, 100.0, logs) == f
+
+
+def test_rate_terms_keep_the_original_bits():
+    """Against the original's per-pair expressions, written out here (etas8out.f outrates)."""
+    d, _, cat, reg = small()
+    n = len(cat)
+    rng = np.random.default_rng(3)
+    phi, h = rng.random(n), rng.uniform(0.05, 1.0, n)
+    x = np.sqrt(np.array(d["b"], dtype=float))
+    gx, gy = np.linspace(cat.x.min(), cat.x.max(), 4), np.linspace(cat.y.min(), cat.y.max(), 5)
+    args = (x, cat.x, cat.y, cat.t, cat.m, phi, h, reg.t_end, reg.t_start)
+    mu, a2, c, alfa, p, dd, q, gamma = x ** 2
+    T = reg.t_end - reg.t_start
+    want = []
+    for x0 in gx:
+        for y0 in gy:
+            s = s1 = 0.0
+            for i in range(n):
+                r0 = math.sqrt((cat.x[i] - x0) ** 2 + (cat.y[i] - y0) ** 2)
+                s += phi[i] * K.dgauss(r0, h[i])
+                s1 += K.dgauss(r0, h[i])
+            lam = 0.0 + mu * s / T
+            for i in range(n):
+                delt = reg.t_end - cat.t[i]
+                pr1 = math.exp(alfa * cat.m[i])
+                ssig = dd * math.exp(gamma * cat.m[i])
+                bbb = (q - 1) / K.PI / ssig
+                dist2 = (cat.x[i] - x0) ** 2 + (cat.y[i] - y0) ** 2
+                pr2 = (p - 1) / c * (1.0 + delt / c) ** (-p)
+                pr3 = bbb * (dist2 / ssig + 1.0) ** (-q)
+                lam += a2 * pr1 * pr2 * pr3
+            want.append((s / T, s1 / T, lam))
+    want = np.array(want)
+    GX, GY = (g.ravel() for g in np.meshgrid(gx, gy, indexing="ij"))
+    assert np.array_equal(K.outrates_grid(*args, gx, gy), want)
+    assert np.array_equal(K.outrates_grid_par(*args, gx, gy), want)
+    assert np.array_equal(K.outrates_points(*args, GX, GY), want)
+    assert np.array_equal(K.outrates_points_par(*args, GX, GY), want)
+
+
+def test_bandwcalc_tree_has_the_same_bits():
+    d, _, cat, _ = small()
+    rng = np.random.default_rng(2)
+    x, y = np.round(rng.normal(0, 1, 3000), 2), np.round(rng.normal(0, 1, 3000), 2)
+    cases = [(cat.x, cat.y), (d["xx"], d["yy"]), (x, y),               # rounded: many duplicates
+             (np.arange(40.0), np.zeros(40)), (np.zeros(40), np.arange(40.0)),  # collinear
+             (np.zeros(50), np.zeros(50)), (rng.random(5), rng.random(5))]      # identical, few
+    for xx, yy in cases:
+        xx, yy = np.asarray(xx, float), np.asarray(yy, float)
+        for npp in (1, 5, 20):                                         # 20 > N - 1 in the last
+            for bwm in (0.0, 0.05):
+                assert np.array_equal(K.bandwcalc_tree(xx, yy, npp, bwm), K.bandwcalc(xx, yy, npp, bwm))
+
+
 def test_settings_and_agreement_with_original_quadrature():
     assert Settings().quadrature == "sgl" and Settings().xlamb == "logs"
     assert config.PRESETS["original"]["quadrature"] == "ndiv"
@@ -193,11 +275,56 @@ def test_settings_and_agreement_with_original_quadrature():
     assert np.max(np.abs(fits["sgl"].background_prob - fits["ndiv"].background_prob)) < 1e-4
 
 
+def test_check_fit():
+    """check_fit on the JMA baseline: the known default fit (build/value_only/logs, made by
+    `python -m steqpy configs/jma.toml --out build/value_only/logs`) passes with integral / N = 1;
+    invalid parameters fail. Loads the fit instead of refitting, so it takes seconds."""
+    logs = ROOT / "build/value_only/logs"
+    assert (logs / "probs.dat").exists(), f"missing {logs}: run the JMA fit above first"
+    sd = StochasticDeclustering.from_config(ROOT / "configs/jma.toml")
+    vals = {}
+    for line in open(logs / "params.txt"):
+        k, _, v = line.partition("=")
+        if k.strip() in ("mu", "A", "c", "alpha", "p", "D", "q", "gamma"):
+            vals[k.strip()] = float(v.split("#")[0])
+    sd.params = ETASParams(**vals)
+    # State at the end of the fit: phi from probs.dat (column 2), the background built from it.
+    sd.compute_bandwidths()
+    sd.background_prob = np.loadtxt(logs / "probs.dat", usecols=1)
+    sd.update_background()
+    sd.converged = True
+    sd.check_fit()
+    print(sd.checks)
+    assert sd.checks["failed"] == [] and sd.converged
+    assert abs(sd.checks["integral_over_n"] - 1) < 1e-3
+
+    th = sd.params.to_array()
+    for k, v, word in ((4, 0.9, "above 1"), (6, 0.9, "above 1"), (1, 1e6, "should be 1")):
+        bad = th.copy()
+        bad[k] = v
+        sd.params = ETASParams.from_array(bad)
+        sd.converged = True
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sd.check_fit()
+        assert any(word in m for m in sd.checks["failed"]), sd.checks
+        assert sd.converged is False and w
+
+    # Parameters held fixed are not at an optimum, so only the validity tests apply.
+    sd.settings = dataclasses.replace(sd.settings, optimise=False)
+    sd.check_fit()
+    assert not any("should be 1" in m for m in sd.checks["failed"]), sd.checks
+
+
 if __name__ == "__main__":
     test_etas_kernel_and_integrands_against_closed_form()
     test_q_integrand_against_finite_difference()
     test_gaussian()
     test_gradient_and_threads()
     test_cheaper_lambda_sums()
+    test_value_only_f_has_the_same_bits()
+    test_rate_terms_keep_the_original_bits()
+    test_bandwcalc_tree_has_the_same_bits()
     test_settings_and_agreement_with_original_quadrature()
+    test_check_fit()
     print("ok")

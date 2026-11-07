@@ -35,6 +35,12 @@ from .readers import read_catalog
 from .result import DeclusteringResult
 
 
+# check_fit limits. At an optimum in (mu, A) the integral of lambda equals the number of targets,
+# and the valid JMA fits have |g| of 5e-3 or less, so these only catch fits that are far off.
+INTEGRAL_TOL = 0.01
+GRADIENT_TOL = 1.0
+
+
 class StochasticDeclustering:
     """Alternates (a) background estimation given the background probabilities and
     (b) ETAS maximum likelihood given the background, then (c) probabilities given both.
@@ -73,6 +79,7 @@ class StochasticDeclustering:
         self.history = []                       # (level, outer, pass, change)
         self.converged = None
         self.ndiv_error = None
+        self.checks = None
 
     @classmethod
     def from_config(cls, source=None, log=None, **overrides):
@@ -111,7 +118,9 @@ class StochasticDeclustering:
     # -- the estimation steps (each usable on its own) ----------------------------------
     def compute_bandwidths(self):
         c, s = self.catalog, self.settings
-        self.bandwidth = K.bandwcalc(c.x, c.y, s.npp, s.bwm_deg)
+        # same bits; "ndiv" and "original" keep the 1:1 search
+        search = K.bandwcalc_tree if s.quadrature == "sgl" else K.bandwcalc
+        self.bandwidth = search(c.x, c.y, s.npp, s.bwm_deg)
 
     def _bkgd(self, out, refine=1):
         """refine multiplies the quadrature size, for check_ndiv."""
@@ -150,6 +159,15 @@ class StochasticDeclustering:
         self.n_likelihood_calls += 1
         return self._func15(sqrt_params, self.xint0)
 
+    def _value(self, sqrt_params, log):
+        """-log L alone, same bits as neg_log_likelihood's, for the line search."""
+        c, r, s = self.catalog, self.region, self.settings
+        self.n_likelihood_calls += 1
+        return s.kernel("func15_sgl_value")(
+            np.asarray(sqrt_params, dtype=np.float64), self.ind, self.background_rate, self.xint0,
+            c.x, c.y, c.t, c.m, r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start,
+            *K.gauss_nodes(s.sgl_nodes), s.log_floor, s.log_penalty, s.xlamb == "logs")
+
     def maximise(self):
         """Quasi-Newton (DFP) MLE on sqrt(params), which keeps every parameter positive."""
         s = self.settings
@@ -160,7 +178,8 @@ class StochasticDeclustering:
             r = self.neg_log_likelihood(b)
             last[:] = [r[0]]
             return r
-        davidn(x, f, self.log, s.tol, s.max_sweeps, s.ls_step, s.ls_shrink, s.ls_expand)
+        davidn(x, f, self.log, s.tol, s.max_sweeps, s.ls_step, s.ls_shrink, s.ls_expand,
+               value=self._value if s.quadrature == "sgl" else None)
         self.params = ETASParams.from_array(np.array(x) ** 2)
         self.neg_loglik = last[0]               # davidn's last call is at the returned x
 
@@ -181,6 +200,46 @@ class StochasticDeclustering:
         if self.ndiv_error > s.ndiv_check_tol:
             warnings.warn(f"{name}={size} changes -log L by {self.ndiv_error:.1e} when "
                           f"doubled (> {s.ndiv_check_tol}): consider a larger {name}")
+
+    def check_fit(self):
+        """Is the fit a usable model? -log L settling (the outer test) does not show this: outside
+        p, q > 1 it has no lower limit, so an invalid fit can settle or keep "improving". Fills
+        self.checks; a failure warns and makes converged False."""
+        c, s = self.catalog, self.settings
+        th = self.params.to_array()
+        b = np.sqrt(th)
+        f, g = self._func15(b, self.xint0)
+        phi = np.empty(len(c))
+        s.probcalc()(b, self.background_rate, c.x, c.y, c.t, c.m, phi)
+        t = self.ind == 1
+        with np.errstate(all="ignore"):
+            lam = th[0] * self.background_rate[t] / phi[t]
+            logs = np.where(lam > s.log_floor, np.log(lam), -s.log_penalty)
+        integral = f + float(logs.sum())
+        ratio = integral / int(t.sum())
+        gnorm = float(np.linalg.norm(g))
+        self.checks = dict(p=float(th[4]), q=float(th[6]), n_lambda_not_positive=int(np.sum(~(lam > 0))),
+                           integral=integral, integral_over_n=ratio, gradient_norm=gnorm)
+        failed = []
+        if not (np.all(np.isfinite(th)) and np.isfinite(f)):
+            failed.append("parameters or -log L not finite")
+        # This kernel is normalised over infinite time and space, which needs both above 1.
+        if not (th[4] > 1 and th[6] > 1):
+            failed.append(f"p = {th[4]:.4g}, q = {th[6]:.4g}: the kernel needs both above 1")
+        if self.checks["n_lambda_not_positive"]:
+            failed.append(f"{self.checks['n_lambda_not_positive']} targets have lambda <= 0")
+        if not integral > 0:
+            failed.append(f"integral of lambda = {integral:.4g}")
+        if s.optimise:      # with fixed parameters the fit is not at an optimum, so these need not hold
+            if not abs(ratio - 1) <= INTEGRAL_TOL:
+                failed.append(f"integral of lambda / targets = {ratio:.4g}, should be 1")
+            if not gnorm <= GRADIENT_TOL:
+                failed.append(f"gradient norm = {gnorm:.4g}")
+        self.checks["failed"] = failed
+        if failed:
+            warnings.warn("fit failed its checks: " + "; ".join(failed))
+            if s.converge:
+                self.converged = False
 
     def _change(self, metric, ref):
         """(change, new reference) for a convergence test; ref None = first evaluation.
@@ -236,6 +295,7 @@ class StochasticDeclustering:
         if self.neg_loglik is None:
             self.neg_loglik = self._func15(np.sqrt(self.params.to_array()), self.xint0,
                                            s.ndiv)[0]
+        self.check_fit()
         return self.result()
 
     def result(self):
@@ -246,4 +306,4 @@ class StochasticDeclustering:
             self.catalog, self.region, self.settings, self.ind, self.params,
             self.background_prob.copy(), self.background_rate.copy(), self.bandwidth.copy(),
             self.neg_loglik, list(self.history), self.converged, self.n_likelihood_calls,
-            self.ndiv_error, self.projection, self.grid, self.config)
+            self.ndiv_error, self.projection, self.grid, self.config, self.checks)

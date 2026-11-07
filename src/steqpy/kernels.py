@@ -115,6 +115,77 @@ def bandwcalc(xx, yy, npp, bwm):
 
 
 @njit(cache=True)
+def _insert(buf, npp, temp):
+    for k in range(npp):
+        if buf[k] > temp:
+            for kk in range(npp - 1, k, -1):
+                buf[kk] = buf[kk - 1]
+            buf[k] = temp
+            break
+
+
+@njit(cache=True)
+def bandwcalc_tree(xx, yy, npp, bwm, leaf=16):
+    """bandwcalc with a k-d tree: same bits, because it only skips points provably farther than
+    the buffer's last entry. Balanced tree stored in idx: a node is the range [lo, hi), its
+    point is the median at mid, and it splits on x at even depth, y at odd depth."""
+    n = xx.shape[0]
+    idx = np.arange(n)
+    slo = np.empty(128, dtype=np.int64)
+    shi = np.empty(128, dtype=np.int64)
+    sdp = np.empty(128, dtype=np.int64)
+    spl = np.empty(128)
+    slo[0], shi[0], sdp[0], top = 0, n, 0, 1
+    while top > 0:
+        top -= 1
+        lo, hi, dp = slo[top], shi[top], sdp[top]
+        if hi - lo <= leaf:
+            continue
+        part = idx[lo:hi]
+        coord = xx[part] if dp % 2 == 0 else yy[part]
+        idx[lo:hi] = part[np.argsort(coord)]
+        mid = (lo + hi) // 2
+        slo[top], shi[top], sdp[top] = lo, mid, dp + 1
+        top += 1
+        slo[top], shi[top], sdp[top] = mid + 1, hi, dp + 1
+        top += 1
+
+    zbandw = np.empty(n)
+    buf = np.empty(npp)
+    for i in range(n):
+        buf[:] = 10e39
+        slo[0], shi[0], sdp[0], spl[0], top = 0, n, 0, 0.0, 1
+        while top > 0:
+            top -= 1
+            lo, hi, dp, plane = slo[top], shi[top], sdp[top], spl[top]
+            # Rounding is monotonic, so true distance >= |coordinate gap| >= plane here.
+            if plane > buf[npp - 1]:
+                continue
+            if hi - lo <= leaf:
+                for m in range(lo, hi):
+                    j = idx[m]
+                    if j != i:
+                        _insert(buf, npp, math.sqrt((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2))
+                continue
+            mid = (lo + hi) // 2
+            j = idx[mid]
+            if j != i:
+                _insert(buf, npp, math.sqrt((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2))
+            gap = (xx[i] - xx[j]) if dp % 2 == 0 else (yy[i] - yy[j])
+            # Far child first on the stack, so the near child is searched first.
+            if gap <= 0.0:
+                near_lo, near_hi, far_lo, far_hi = lo, mid, mid + 1, hi
+            else:
+                near_lo, near_hi, far_lo, far_hi = mid + 1, hi, lo, mid
+            slo[top], shi[top], sdp[top], spl[top] = far_lo, far_hi, dp + 1, abs(gap)
+            top += 1
+            slo[top], shi[top], sdp[top], spl[top] = near_lo, near_hi, dp + 1, 0.0
+            top += 1
+        zbandw[i] = max(buf[npp - 1], bwm)
+    return zbandw
+
+
+@njit(cache=True)
 def bkgdcalc(xx, yy, zprob, zbandw, tx, ty, npoly, tz, tstart, zbkgd, ndiv=NDIV, eps=E10,
              eps_r=E20):
     """Background rate at every event (variable-bandwidth Gaussian sum weighted by the
@@ -393,33 +464,36 @@ def func15(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gra
 
 
 @njit(cache=True)
-def _rates_at(x0, y0, x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart):
+def _rate_terms(x, zz, zmg, tz):
+    """What the intensity needs from each event that does not depend on the grid point, so it
+    is computed once per event rather than once per pair. Same expression order as the
+    original's sum, so the rates keep their bits."""
+    a2, c, alfa, p, d, q, gamma = (x[1] ** 2, x[2] ** 2, x[3] ** 2, x[4] ** 2, x[5] ** 2, x[6] ** 2,
+                                   x[7] ** 2)
+    nn = zz.shape[0]
+    coef, ssig, bbb = np.empty(nn), np.empty(nn), np.empty(nn)
+    for ii in range(nn):
+        ssig[ii] = d * math.exp(gamma * zmg[ii])
+        bbb[ii] = (q - 1) / PI / ssig[ii]
+        coef[ii] = a2 * math.exp(alfa * zmg[ii]) * ((p - 1) / c * (1.0 + (tz - zz[ii]) / c) ** (-p))
+    return coef, ssig, bbb
+
+
+@njit(cache=True)
+def _rates_at(x0, y0, x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb):
     """(background, total-kernel density, full intensity) at grid point (x0, y0), time tz."""
-    xmu = x[0] ** 2
-    a2 = x[1] ** 2
-    c = x[2] ** 2
-    alfa = x[3] ** 2
-    p = x[4] ** 2
-    d = x[5] ** 2
     q = x[6] ** 2
-    gamma = x[7] ** 2
     nn = xx.shape[0]
     s = 0.0
     s1 = 0.0
     for ii in range(nn):
-        r0 = math.sqrt((xx[ii] - x0) ** 2 + (yy[ii] - y0) ** 2)
-        s += zprob[ii] * dgauss(r0, zbandw[ii])
-        s1 += dgauss(r0, zbandw[ii])
-    lam = 0.0 + xmu * s / (tz - tstart)
+        g = dgauss(math.sqrt((xx[ii] - x0) ** 2 + (yy[ii] - y0) ** 2), zbandw[ii])
+        s += zprob[ii] * g
+        s1 += g
+    lam = 0.0 + x[0] ** 2 * s / (tz - tstart)
     for ii in range(nn):
-        delt = tz - zz[ii]
-        pr1 = math.exp(alfa * zmg[ii])
-        ssig = d * math.exp(gamma * zmg[ii])
-        bbb = (q - 1) / PI / ssig
         dist2 = (xx[ii] - x0) ** 2 + (yy[ii] - y0) ** 2
-        pr2 = (p - 1) / c * (1.0 + delt / c) ** (-p)
-        pr3 = bbb * (dist2 / ssig + 1.0) ** (-q)
-        lam += a2 * pr1 * pr2 * pr3
+        lam += coef[ii] * (bbb[ii] * (dist2 / ssig[ii] + 1.0) ** (-q))
     return s / (tz - tstart), s1 / (tz - tstart), lam
 
 
@@ -429,10 +503,11 @@ def outrates_grid(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy):
     the grid gx x gy. Rows ordered x-major, like the original file."""
     ny = gy.shape[0]
     out = np.empty((gx.shape[0] * ny, 3))
+    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
     for ix in range(gx.shape[0]):
         for iy in range(ny):
-            out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zz, zmg, zprob, zbandw,
-                                          tz, tstart)
+            out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zprob, zbandw, tz, tstart,
+                                          coef, ssig, bbb)
     return out
 
 
@@ -534,10 +609,11 @@ def outrates_grid_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy):
     """Parallel outrates_grid (same result: grid points are independent)."""
     ny = gy.shape[0]
     out = np.empty((gx.shape[0] * ny, 3))
+    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
     for ix in prange(gx.shape[0]):
         for iy in range(ny):
-            out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zz, zmg, zprob, zbandw,
-                                          tz, tstart)
+            out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zprob, zbandw, tz, tstart,
+                                          coef, ssig, bbb)
     return out
 
 
@@ -546,8 +622,9 @@ def outrates_points(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
     """outrates_grid at arbitrary points (px[k], py[k]) (e.g. a lon/lat grid projected to
     an irregular set of model points)."""
     out = np.empty((px.shape[0], 3))
+    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
     for k in range(px.shape[0]):
-        out[k] = _rates_at(px[k], py[k], x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart)
+        out[k] = _rates_at(px[k], py[k], x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb)
     return out
 
 
@@ -555,8 +632,9 @@ def outrates_points(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
 def outrates_points_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
     """Parallel outrates_points (same result)."""
     out = np.empty((px.shape[0], 3))
+    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
     for k in prange(px.shape[0]):
-        out[k] = _rates_at(px[k], py[k], x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart)
+        out[k] = _rates_at(px[k], py[k], x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb)
     return out
 
 
@@ -909,3 +987,111 @@ def func15_sgl_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tst
         _func15_sgl_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
                           lam, lg, xi, xg, use_logs, pr1c, ssigc, bbbc)
     return _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg)
+
+
+# ---------------------------------------------------------------------------------------
+# -log L without the gradient, for davidn's line search, which only compares values: about
+# 6 of 7 calls in a fit. Each expression matches its gradient version term by term, so the
+# value has the same bits; test_sgl.py asserts it.
+# ---------------------------------------------------------------------------------------
+
+@njit(cache=True)
+def _xlamb_logs_value(i, b, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc):
+    """xlamb_logs' value alone."""
+    a2, c, p, q = b[1] ** 2, b[2] ** 2, b[4] ** 2, b[6] ** 2
+    pc = (p - 1) / c
+    s = b[0] ** 2 * zbkgd[i]
+    for j in range(i):
+        l1 = math.log(1.0 + (zz[i] - zz[j]) / c)
+        ratio = (((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / ssigc[j])
+        l2 = math.log(1.0 + ratio)
+        s += a2 * (pr1c[j] * pc * bbbc[j] * math.exp(-p * l1 - q * l2))
+    return s
+
+
+@njit(cache=True)
+def _polyint_sgl_value(gamma, d, q, xmag, xp, yp, npoly, xc, yc, gx, gw):
+    """polyint_sgl4's integral alone."""
+    ssig = d * math.exp(gamma * xmag)
+    c0 = 1.0 / 2.0 / PI
+    s0 = 0.0
+    for j in range(npoly):
+        sg, h, sa, sb = _edge_sgl(xp[j], yp[j], xp[j + 1], yp[j + 1], xc, yc)
+        if sg == 0.0:
+            continue
+        ds = sb - sa
+        mid = sa + ds * 0.5
+        for k in range(gx.shape[0]):
+            ch = math.cosh(mid + 0.5 * ds * gx[k])
+            r = h * ch
+            t = 1.0 + r * r / ssig
+            s0 += (sg * 0.5 * ds * gw[k] / ch) * ((1.0 - t * t ** (-q)) * c0)
+    return s0
+
+
+@njit(cache=True)
+def _xint_value(i, b, zz, zmg, tz, tstart, si):
+    """_xint_terms' value alone."""
+    a2, c, alfa, p = b[1] ** 2, b[2] ** 2, b[3] ** 2, b[4] ** 2
+    if zz[i] > tstart:
+        gi = 1.0 - (1.0 + (tz - zz[i]) / c) ** (1 - p)
+    else:
+        gi2 = 1 - (1.0 + (tz - zz[i]) / c) ** (1 - p)
+        gi1 = 1 - (1.0 + (tstart - zz[i]) / c) ** (1 - p)
+        gi = gi2 - gi1
+    return a2 * math.exp(alfa * zmg[i]) * gi * si
+
+
+@njit(cache=True)
+def _func15_value_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw, lam,
+                        xi, use_logs, pr1c, ssigc, bbbc):
+    if ind[i] == 1:
+        if use_logs:
+            lam[i] = _xlamb_logs_value(i, b, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc)
+        else:
+            lam[i] = _xlamb_value(i, b, zbkgd, xx, yy, zz, pr1c, ssigc, bbbc)
+    si = _polyint_sgl_value(b[7] ** 2, b[5] ** 2, b[6] ** 2, zmg[i], tx, ty, npoly, xx[i], yy[i],
+                            gx, gw)
+    xi[i] = _xint_value(i, b, zz, zmg, tz, tstart, si)
+
+
+@njit(cache=True)
+def _func15_value_total(b, ind, xint0, log_floor, log_penalty, lam, xi):
+    """_func15_total's value alone."""
+    ff = 0.0
+    fv0 = 0.0
+    for i in range(ind.shape[0]):
+        if ind[i] == 1:
+            if lam[i] > log_floor:
+                ff += math.log(lam[i])
+            else:
+                ff -= log_penalty
+    for i in range(ind.shape[0]):
+        fv0 += xi[i]
+    return -ff + (fv0 + xint0 * b[0] * b[0])
+
+
+@njit(cache=True)
+def func15_sgl_value(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                     log_floor=1e-25, log_penalty=100.0, use_logs=True):
+    """func15_sgl's value alone (same bits)."""
+    nn = xx.shape[0]
+    lam, xi = np.ones(nn), np.empty(nn)
+    pr1c, ssigc, bbbc = _parent_terms(b, zmg)
+    for i in range(nn):
+        _func15_value_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                            lam, xi, use_logs, pr1c, ssigc, bbbc)
+    return _func15_value_total(b, ind, xint0, log_floor, log_penalty, lam, xi)
+
+
+@njit(cache=True, parallel=True)
+def func15_sgl_value_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                         log_floor=1e-25, log_penalty=100.0, use_logs=True):
+    """Parallel func15_sgl_value (same bits)."""
+    nn = xx.shape[0]
+    lam, xi = np.ones(nn), np.empty(nn)
+    pr1c, ssigc, bbbc = _parent_terms(b, zmg)
+    for i in prange(nn):
+        _func15_value_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
+                            lam, xi, use_logs, pr1c, ssigc, bbbc)
+    return _func15_value_total(b, ind, xint0, log_floor, log_penalty, lam, xi)
