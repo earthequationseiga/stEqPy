@@ -78,6 +78,32 @@ def test_draws_converge_to_probabilities(res):
     print(f"max |mean draw - phi| = {np.max(np.abs(kept - phi)):.4f}, tolerance {TOL:.4f}")
 
 
+def test_k_form_outputs(res):
+    """K-form fit: outputs equal the A-form ones at p, q > 1 (rounding only), and exist for
+    p, q <= 1, where A is undefined."""
+    assert res.K is not None
+    as_a = dataclasses.replace(res, K=None)         # same params through the A-form kernels
+    gx, gy = np.linspace(res.catalog.x.min(), res.catalog.x.max(), 4), np.linspace(
+        res.catalog.y.min(), res.catalog.y.max(), 3)
+    assert np.max(np.abs(res.final_background_prob - as_a.final_background_prob)) < 1e-13
+    ra, rk = as_a.rates(gx, gy), res.rates(gx, gy)
+    assert np.max(np.abs(rk / ra - 1)) < 1e-12
+    i = len(res.catalog) - 1
+    assert np.max(np.abs(res.triggering_probs(i) - as_a.triggering_probs(i))) < 1e-13
+
+    th = res.params.to_array()
+    th[1], th[4], th[6] = np.nan, 0.9, 0.95
+    low = dataclasses.replace(res, params=ETASParams.from_array(th))
+    phi = low.final_background_prob
+    assert np.all(np.isfinite(phi)) and np.all((phi > 0) & (phi <= 1))
+    for i in range(1, len(phi), 23):
+        rho = low.triggering_probs(i)
+        assert np.all(rho >= 0) and abs(phi[i] + rho.sum() - 1) < 1e-12
+    assert np.all(np.isfinite(low.rates(gx, gy)))
+    pa = low.sample_parents(seed=3)
+    assert np.all((pa >= -1) & (pa < np.arange(len(pa))))
+
+
 if __name__ == "__main__":
     fit = small_fit()
     undecided = int(np.sum((fit.final_background_prob > 0.05) & (fit.final_background_prob < 0.95)))
@@ -87,4 +113,5 @@ if __name__ == "__main__":
     test_final_probs_use_final_params(fit)
     test_seeds_and_threads(fit)
     test_draws_converge_to_probabilities(fit)
+    test_k_form_outputs(fit)
     print("ok")

@@ -480,6 +480,19 @@ def _rate_terms(x, zz, zmg, tz):
 
 
 @njit(cache=True)
+def _rate_terms_k(x, zz, zmg, tz):
+    """_rate_terms in the K form (x = sqrt(theta) with K in A's place): no (p-1), (q-1)."""
+    k, c, alfa, p, d, gamma = x[1] ** 2, x[2] ** 2, x[3] ** 2, x[4] ** 2, x[5] ** 2, x[7] ** 2
+    nn = zz.shape[0]
+    coef, ssig, bbb = np.empty(nn), np.empty(nn), np.empty(nn)
+    for ii in range(nn):
+        ssig[ii] = d * math.exp(gamma * zmg[ii])
+        bbb[ii] = 1.0 / PI / ssig[ii]
+        coef[ii] = k * math.exp(alfa * zmg[ii]) * (1.0 / c * (1.0 + (tz - zz[ii]) / c) ** (-p))
+    return coef, ssig, bbb
+
+
+@njit(cache=True)
 def _rates_at(x0, y0, x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb):
     """(background, total-kernel density, full intensity) at grid point (x0, y0), time tz."""
     q = x[6] ** 2
@@ -498,12 +511,12 @@ def _rates_at(x0, y0, x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb):
 
 
 @njit(cache=True)
-def outrates_grid(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy):
+def outrates_grid(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy, k_form=False):
     """Background (prob-weighted), total-kernel density and full intensity at time tz on
-    the grid gx x gy. Rows ordered x-major, like the original file."""
+    the grid gx x gy. Rows ordered x-major, like the original file. k_form: x holds K."""
     ny = gy.shape[0]
     out = np.empty((gx.shape[0] * ny, 3))
-    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
+    coef, ssig, bbb = _rate_terms_k(x, zz, zmg, tz) if k_form else _rate_terms(x, zz, zmg, tz)
     for ix in range(gx.shape[0]):
         for iy in range(ny):
             out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zprob, zbandw, tz, tstart,
@@ -605,11 +618,11 @@ def _func15_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg):
 
 
 @njit(cache=True, parallel=True)
-def outrates_grid_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy):
+def outrates_grid_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy, k_form=False):
     """Parallel outrates_grid (same result: grid points are independent)."""
     ny = gy.shape[0]
     out = np.empty((gx.shape[0] * ny, 3))
-    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
+    coef, ssig, bbb = _rate_terms_k(x, zz, zmg, tz) if k_form else _rate_terms(x, zz, zmg, tz)
     for ix in prange(gx.shape[0]):
         for iy in range(ny):
             out[ix * ny + iy] = _rates_at(gx[ix], gy[iy], x, xx, yy, zprob, zbandw, tz, tstart,
@@ -618,21 +631,21 @@ def outrates_grid_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, gx, gy):
 
 
 @njit(cache=True)
-def outrates_points(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
+def outrates_points(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py, k_form=False):
     """outrates_grid at arbitrary points (px[k], py[k]) (e.g. a lon/lat grid projected to
     an irregular set of model points)."""
     out = np.empty((px.shape[0], 3))
-    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
+    coef, ssig, bbb = _rate_terms_k(x, zz, zmg, tz) if k_form else _rate_terms(x, zz, zmg, tz)
     for k in range(px.shape[0]):
         out[k] = _rates_at(px[k], py[k], x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb)
     return out
 
 
 @njit(cache=True, parallel=True)
-def outrates_points_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py):
+def outrates_points_par(x, xx, yy, zz, zmg, zprob, zbandw, tz, tstart, px, py, k_form=False):
     """Parallel outrates_points (same result)."""
     out = np.empty((px.shape[0], 3))
-    coef, ssig, bbb = _rate_terms(x, zz, zmg, tz)
+    coef, ssig, bbb = _rate_terms_k(x, zz, zmg, tz) if k_form else _rate_terms(x, zz, zmg, tz)
     for k in prange(px.shape[0]):
         out[k] = _rates_at(px[k], py[k], x, xx, yy, zprob, zbandw, tz, tstart, coef, ssig, bbb)
     return out
@@ -662,11 +675,29 @@ def trigger_terms(i, x, zbkgd, xx, yy, zz, zmg, out):
 
 
 @njit(cache=True)
-def _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u):
+def trigger_terms_k(i, x, zbkgd, xx, yy, zz, zmg, out):
+    """trigger_terms in the K form (x = sqrt(theta) with K in A's place); same per-pair
+    expression as _k_lambda."""
+    k, c, alfa, p, d, q, gamma = (x[1] ** 2, x[2] ** 2, x[3] ** 2, x[4] ** 2, x[5] ** 2, x[6] ** 2,
+                                  x[7] ** 2)
+    for j in range(i):
+        sj = d * math.exp(gamma * zmg[j])
+        wj = math.exp(alfa * zmg[j]) / (PI * sj)
+        L1 = math.log(1.0 + (zz[i] - zz[j]) / c)
+        L2 = math.log(1.0 + ((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / sj)
+        out[j] = k * (wj / c * math.exp(-p * L1 - q * L2))
+    return zbkgd[i] * x[0] * x[0]
+
+
+@njit(cache=True)
+def _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u, k_form=False):
     """Inverse-CDF draw from (phi_i, rho_i0, ..., rho_i,i-1) with u in [0, 1): the parent's
     index, or -1 = background. Scaling u by lambda saves dividing every term by it."""
     rates = np.empty(i)
-    s = trigger_terms(i, x, zbkgd, xx, yy, zz, zmg, rates)
+    if k_form:
+        s = trigger_terms_k(i, x, zbkgd, xx, yy, zz, zmg, rates)
+    else:
+        s = trigger_terms(i, x, zbkgd, xx, yy, zz, zmg, rates)
     target = s
     for j in range(i):
         target += rates[j]
@@ -681,20 +712,20 @@ def _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u):
 
 
 @njit(cache=True)
-def sample_parents(x, zbkgd, xx, yy, zz, zmg, u):
+def sample_parents(x, zbkgd, xx, yy, zz, zmg, u, k_form=False):
     """One parent per event from the uniforms u (Algorithm 3 of Zhuang et al. 2002)."""
     out = np.empty(xx.shape[0], dtype=np.int64)
     for i in range(xx.shape[0]):
-        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i])
+        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i], k_form)
     return out
 
 
 @njit(cache=True, parallel=True)
-def sample_parents_par(x, zbkgd, xx, yy, zz, zmg, u):
+def sample_parents_par(x, zbkgd, xx, yy, zz, zmg, u, k_form=False):
     """Parallel sample_parents (same result: the uniforms are fixed before the loop)."""
     out = np.empty(xx.shape[0], dtype=np.int64)
     for i in prange(xx.shape[0]):
-        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i])
+        out[i] = _draw_parent(i, x, zbkgd, xx, yy, zz, zmg, u[i], k_form)
     return out
 
 
@@ -1159,31 +1190,60 @@ def _space_k(gamma, d, q, m, xp, yp, npoly, xc, yc, gx, gw):
 
 
 @njit(cache=True)
-def _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg):
-    """Event i's lambda (and its gradient terms) and its triggered integral (and gradient)."""
-    mu, a, c, alfa, p, d, q, gamma = th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]
-    s = mu * u[i]
-    t2 = t3 = t4 = t5 = t6 = t7 = t8 = 0.0
+def _k_parents(th, mm):
+    """Per-parent factors, computed once per call rather than once per pair:
+    s_j = D e^(gamma m_j) and w_j = e^(alpha m_j) / (pi s_j)."""
+    alfa, d, gamma = th[3], th[5], th[7]
+    n = mm.shape[0]
+    sj, wj = np.empty(n), np.empty(n)
+    for j in range(n):
+        sj[j] = d * math.exp(gamma * mm[j])
+        wj[j] = math.exp(alfa * mm[j]) / (PI * sj[j])
+    return sj, wj
+
+
+@njit(cache=True)
+def _k_lambda(i, th, u, xx, yy, zz, sj, wj):
+    """lambda at event i, K form. x^-p y^-q = exp(-p log x - q log y): 2 log + 1 exp per pair."""
+    a, c, p, q = th[1], th[2], th[4], th[6]
+    s = th[0] * u[i]
     for j in range(i):
-        delt = zz[i] - zz[j]
-        L1 = math.log(1.0 + delt / c)
-        sj = d * math.exp(gamma * mm[j])
-        r = ((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / sj
-        L2 = math.log(1.0 + r)
-        tt = math.exp(alfa * mm[j] - p * L1 - q * L2) / c / (PI * sj)
-        at = a * tt
-        s += at
-        v = -1.0 + q * r / (1.0 + r)
-        t2 += tt
-        t3 += at * (-1.0 / c + p / c - p / (c + delt))
-        t4 += at * mm[j]
-        t5 += at * (-L1)
-        t6 += at * v / d
-        t7 += at * (-L2)
-        t8 += at * mm[j] * v
-    lam[i] = s
-    lg[i, 0], lg[i, 1], lg[i, 2], lg[i, 3] = u[i], t2, t3, t4
-    lg[i, 4], lg[i, 5], lg[i, 6], lg[i, 7] = t5, t6, t7, t8
+        L1 = math.log(1.0 + (zz[i] - zz[j]) / c)
+        L2 = math.log(1.0 + ((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / sj[j])
+        s += a * (wj[j] / c * math.exp(-p * L1 - q * L2))
+    return s
+
+
+@njit(cache=True)
+def _k_event(i, th, ind, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, sj, wj,
+             lam, lg, xi, xg):
+    """Event i: lambda and its gradient terms (targets only: the likelihood sums log lambda
+    over targets), and its triggered integral and gradient (every event)."""
+    mu, a, c, alfa, p, d, q, gamma = th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]
+    if ind[i] == 1:
+        s = mu * u[i]
+        t2 = t3 = t4 = t5 = t6 = t7 = t8 = 0.0
+        for j in range(i):
+            delt = zz[i] - zz[j]
+            L1 = math.log(1.0 + delt / c)
+            r = ((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / sj[j]
+            L2 = math.log(1.0 + r)
+            tt = wj[j] / c * math.exp(-p * L1 - q * L2)
+            at = a * tt
+            s += at
+            v = -1.0 + q * r / (1.0 + r)
+            t2 += tt
+            t3 += at * (-1.0 / c + p / c - p / (c + delt))
+            t4 += at * mm[j]
+            t5 += at * (-L1)
+            t6 += at * v / d
+            t7 += at * (-L2)
+            t8 += at * mm[j] * v
+        lam[i] = s
+        lg[i, 0], lg[i, 1], lg[i, 2], lg[i, 3] = u[i], t2, t3, t4
+        lg[i, 4], lg[i, 5], lg[i, 6], lg[i, 7] = t5, t6, t7, t8
+    else:
+        lam[i] = 1.0                # unused: not a target
     s0, s1, s2, s3 = _space_k(gamma, d, q, mm[i], tx, ty, npoly, xx[i], yy[i], gx, gw)
     w, wc, wp = _w_k(tz - zz[i], c, p)
     if zz[i] <= tstart:             # only the part of its window after tstart counts
@@ -1221,12 +1281,15 @@ def _k_total(b, ind, xint0, grad, floor, penalty, lam, lg, xi, xg):
 @njit(cache=True)
 def func15_k(b, ind, u, xint0, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, grad, gx, gw,
              log_floor=1e-25, log_penalty=100.0):
-    """K form: (-log L, lambda at every event); gradient w.r.t. b = sqrt(theta) into grad."""
+    """K form: (-log L, lambda; valid at targets only); gradient w.r.t. b = sqrt(theta) into
+    grad."""
     n = xx.shape[0]
     th = b * b
-    lam, lg, xi, xg = np.empty(n), np.empty((n, 8)), np.empty(n), np.empty((n, 8))
+    sj, wj = _k_parents(th, mm)
+    lam, lg, xi, xg = np.empty(n), np.zeros((n, 8)), np.empty(n), np.empty((n, 8))
     for i in range(n):
-        _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg)
+        _k_event(i, th, ind, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, sj, wj,
+                 lam, lg, xi, xg)
     return _k_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg), lam
 
 
@@ -1236,7 +1299,28 @@ def func15_k_par(b, ind, u, xint0, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gr
     """Parallel func15_k (same result)."""
     n = xx.shape[0]
     th = b * b
-    lam, lg, xi, xg = np.empty(n), np.empty((n, 8)), np.empty(n), np.empty((n, 8))
+    sj, wj = _k_parents(th, mm)
+    lam, lg, xi, xg = np.empty(n), np.zeros((n, 8)), np.empty(n), np.empty((n, 8))
     for i in prange(n):
-        _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg)
+        _k_event(i, th, ind, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, sj, wj,
+                 lam, lg, xi, xg)
     return _k_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg), lam
+
+
+@njit(cache=True)
+def lambda_k(b, u, xx, yy, zz, mm, lam):
+    """K form: lambda at every event (for the probabilities), no gradient. Same bits as
+    func15_k's lambda at targets."""
+    th = b * b
+    sj, wj = _k_parents(th, mm)
+    for i in range(xx.shape[0]):
+        lam[i] = _k_lambda(i, th, u, xx, yy, zz, sj, wj)
+
+
+@njit(cache=True, parallel=True)
+def lambda_k_par(b, u, xx, yy, zz, mm, lam):
+    """Parallel lambda_k (same result)."""
+    th = b * b
+    sj, wj = _k_parents(th, mm)
+    for i in prange(xx.shape[0]):
+        lam[i] = _k_lambda(i, th, u, xx, yy, zz, sj, wj)

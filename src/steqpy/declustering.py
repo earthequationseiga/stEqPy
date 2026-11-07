@@ -145,7 +145,8 @@ class StochasticDeclustering:
         c = self.catalog
         if self.settings.form == "K":
             b = np.sqrt(self._theta())
-            lam = self._func15_k(b, self.xint0)[2]
+            lam = np.empty(len(c))
+            self.settings.kernel("lambda_k")(b, self.background_rate, c.x, c.y, c.t, c.m, lam)
             self.background_prob[:] = b[0] ** 2 * self.background_rate / lam
             return
         self.settings.probcalc()(np.sqrt(self.params.to_array()), self.background_rate, c.x, c.y,
@@ -168,7 +169,7 @@ class StochasticDeclustering:
         self.params = ETASParams.from_array(th)
 
     def _func15_k(self, sqrt_theta, xint0, refine=1):
-        """K form: (-log L, gradient, lambda at every event)."""
+        """K form: (-log L, gradient, lambda; lambda is valid at targets only)."""
         c, r, s = self.catalog, self.region, self.settings
         grad = np.empty(8)
         f, lam = s.kernel("func15_k")(

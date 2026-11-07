@@ -35,6 +35,14 @@ class DeclusteringResult:
     K: float = None                 # K form: K = A (p-1)(q-1); A is NaN if p or q <= 1
 
     # -- declustering outputs ------------------------------------------------------------
+    def _x(self):
+        """sqrt(theta) for the output kernels: K in A's place for a K-form fit, so outputs
+        exist for p, q <= 1 too (A is NaN there)."""
+        th = self.params.to_array().copy()
+        if self.K is not None:
+            th[1] = self.K
+        return np.sqrt(th)
+
     @cached_property
     def final_background_prob(self):
         """phi_i at the final parameters. background_prob (probs.dat) is from before the last
@@ -43,7 +51,10 @@ class DeclusteringResult:
         c = self.catalog
         out = np.empty(len(c))
         self.settings.use_threads()
-        self.settings.probcalc()(np.sqrt(self.params.to_array()), self.background_rate,
+        if self.K is not None:
+            self.settings.kernel("lambda_k")(self._x(), self.background_rate, c.x, c.y, c.t, c.m, out)
+            return self.params.mu * self.background_rate / out
+        self.settings.probcalc()(self._x(), self.background_rate,
                                  c.x, c.y, c.t, c.m, out)
         return out
 
@@ -54,8 +65,8 @@ class DeclusteringResult:
         if not 0 <= i < len(c):
             raise IndexError(f"event {i} out of range for {len(c)} events")
         rates = np.empty(i)
-        bk = K.trigger_terms(i, np.sqrt(self.params.to_array()), self.background_rate,
-                             c.x, c.y, c.t, c.m, rates)
+        terms = K.trigger_terms_k if self.K is not None else K.trigger_terms
+        bk = terms(i, self._x(), self.background_rate, c.x, c.y, c.t, c.m, rates)
         return rates / (bk + rates.sum())
 
     def sample_background(self, seed=None):
@@ -72,7 +83,7 @@ class DeclusteringResult:
         u = np.random.default_rng(seed).random(len(c))
         self.settings.use_threads()
         return self.settings.kernel("sample_parents")(
-            np.sqrt(self.params.to_array()), self.background_rate, c.x, c.y, c.t, c.m, u)
+            self._x(), self.background_rate, c.x, c.y, c.t, c.m, u, self.K is not None)
 
     # -- rate maps and output files ------------------------------------------------------
     def rates(self, gx, gy):
@@ -81,8 +92,8 @@ class DeclusteringResult:
         c, r = self.catalog, self.region
         self.settings.use_threads()
         return self.settings.kernel("outrates_grid")(
-            np.sqrt(self.params.to_array()), c.x, c.y, c.t, c.m, self.background_prob,
-            self.bandwidth, r.t_end, r.t_start, np.asarray(gx, float), np.asarray(gy, float))
+            self._x(), c.x, c.y, c.t, c.m, self.background_prob, self.bandwidth, r.t_end,
+            r.t_start, np.asarray(gx, float), np.asarray(gy, float), self.K is not None)
 
     def rates_lonlat(self, lon, lat):
         """rates() at arbitrary lon/lat points (1-D arrays of equal length)."""
@@ -90,8 +101,8 @@ class DeclusteringResult:
         px, py = self.projection(lon, lat)
         self.settings.use_threads()
         return self.settings.kernel("outrates_points")(
-            np.sqrt(self.params.to_array()), c.x, c.y, c.t, c.m, self.background_prob,
-            self.bandwidth, r.t_end, r.t_start, px, py)
+            self._x(), c.x, c.y, c.t, c.m, self.background_prob,
+            self.bandwidth, r.t_end, r.t_start, px, py, self.K is not None)
 
     def rate_grid(self):
         """(lon, lat, rates) on the configured lon/lat grid, x-major (lon outer)."""
@@ -126,8 +137,9 @@ class DeclusteringResult:
         lines = [f"{k:6s} = {v:.10g}" for k, v in dataclasses.asdict(p).items()]
         lines[2] += "  # days"
         lines[5] += f"  # deg^2 of arc = {p.D_km2:.10g} km^2"
-        if self.K is not None:
-            lines.append(f"K      = {self.K:.10g}  # A (p-1)(q-1), the parameter fitted")
+        if self.K is not None and np.isnan(p.A):
+            # A = K / ((p-1)(q-1)) does not exist for p or q <= 1: report the amplitude as K
+            lines.append(f"K      = {self.K:.10g}  # A undefined (p or q <= 1); K = A (p-1)(q-1)")
         lines += ["", f"-log L = {self.neg_loglik:.10f}",
                   f"AIC    = {2 * (self.neg_loglik + 8):.4f}",
                   f"converged = {self.converged}", f"likelihood calls = "

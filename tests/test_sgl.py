@@ -300,6 +300,15 @@ def test_k_form():
     fk2, lam2 = K.func15_k_par(np.sqrt(tk), *tail, g2, *nodes)
     assert abs(fk / fa - 1) < 1e-12, (fk, fa)
     assert fk == fk2 and np.array_equal(g1, g2) and np.array_equal(lam, lam2)
+    # lambda for the probabilities: same bits as the likelihood's at targets; serial == parallel
+    l1, l2 = np.empty(len(cat)), np.empty(len(cat))
+    K.lambda_k(np.sqrt(tk), u, cat.x, cat.y, cat.t, cat.m, l1)
+    K.lambda_k_par(np.sqrt(tk), u, cat.x, cat.y, cat.t, cat.m, l2)
+    t = sd.ind == 1
+    assert np.array_equal(l1, l2) and np.array_equal(l1[t], lam[t])
+    phi = np.empty(len(cat))
+    K.probcalc_value(np.sqrt(th), u, cat.x, cat.y, cat.t, cat.m, phi)
+    assert np.max(np.abs(th[0] * u / l1 - phi)) < 1e-13
     for p_, q_ in ((th[4], th[6]), (0.8, 1.5), (1.0, 1.0), (1.3, 0.7)):
         t = tk.copy()
         t[4], t[6] = p_, q_
