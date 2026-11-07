@@ -28,7 +28,7 @@ SECTIONS = {
     "convergence": ("converge", "schedule", "outer_metric", "outer_tol", "max_outer",
                     "inner_metric", "inner_tol", "max_inner"),
     "run": ("threads",),
-    "advanced": ("quadrature", "sgl_nodes", "sgl_nodes_background", "xlamb", "ndiv", "ndiv_check",
+    "advanced": ("quadrature", "optimiser", "form", "sgl_nodes", "sgl_nodes_background", "xlamb", "ndiv", "ndiv_check",
                  "ndiv_check_tol", "fast_xint", "tol", "max_sweeps", "ls_step", "ls_shrink",
                  "ls_expand", "frint_eps", "frint_eps_r", "log_floor", "log_penalty",
                  "chunksize"),
@@ -40,7 +40,7 @@ GRID_KEYS = ("lon", "lat", "n")
 PRESETS = {
     "default": {},                                  # = the Settings defaults
     "original": dict(converge=False, quadrature="ndiv", fast_xint=False, ndiv_check=False,
-                     projection="flat"),
+                     projection="flat", optimiser="davidn", form="A"),
 }
 
 

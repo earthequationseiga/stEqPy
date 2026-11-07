@@ -49,7 +49,7 @@ class ETASParams:
 class Settings:
     """Algorithm hyperparameters (TOML tables in config.SECTIONS). Defaults = preset
     "default"; preset "original" = converge=False, quadrature="ndiv", fast_xint=False,
-    ndiv_check=False."""
+    ndiv_check=False, optimiser="davidn", form="A"."""
     # [model]
     projection: str = "laea"        # "laea" (equal-area) or "flat" (original), see geo
     npp: int = 5                    # background bandwidth = distance to npp-th nearest event
@@ -68,6 +68,9 @@ class Settings:
     threads: int = 0                # 0 = serial loops; >0 = Numba threads (bit-identical)
     # [advanced]
     quadrature: str = "sgl"         # polygon integrals: "sgl" (see kernels) or "ndiv" (original)
+    optimiser: str = "bfgs"         # "bfgs" (see bfgs) or "davidn" (the original's DFP)
+    form: str = "K"                 # "K": kernel without normalising factors, K = A (p-1)(q-1),
+                                    # valid for any p, q; "A": the original (needs p, q > 1)
     sgl_nodes: int = 48             # sgl: nodes per polygon edge, ETAS kernel and derivatives
     sgl_nodes_background: int = 64  # sgl: nodes per polygon edge, Gaussian background kernel
     xlamb: str = "logs"             # sgl: "logs" (fastest), "cache" (same bits as the 1:1 sum)
@@ -96,6 +99,12 @@ class Settings:
             raise ValueError("quadrature must be 'sgl' or 'ndiv'")
         if self.xlamb not in ("logs", "cache"):
             raise ValueError("xlamb must be 'logs' or 'cache'")
+        if self.optimiser not in ("bfgs", "davidn"):
+            raise ValueError("optimiser must be 'bfgs' or 'davidn'")
+        if self.form not in ("K", "A"):
+            raise ValueError("form must be 'K' or 'A'")
+        if self.form == "K" and self.quadrature != "sgl":
+            raise ValueError("form 'K' needs quadrature 'sgl' (use form 'A' with 'ndiv')")
         if (self.npp < 1 or self.ndiv < 1 or self.sgl_nodes < 1 or self.sgl_nodes_background < 1
                 or self.max_sweeps < 1 or self.max_outer < 1 or self.max_inner < 1
                 or self.chunksize < 1):

@@ -20,6 +20,8 @@ a fit produces). The numerics live in `kernels` (Numba). With preset "original"
 reproduces the original Fortran bit for bit (validated in tests/test_declustering.py against
 run.Model). Default results differ from it: mainly the equal-area projection (JMA: parameters
 by up to 1.5%, phi by up to 0.09), and slightly the more accurate polygon integrals (3e-6).
+The default also fits with BFGS (see bfgs) in the K form (see kernels, K = A (p-1)(q-1)): same
+MLE when p, q > 1, about 5x fewer likelihood calls, and no runaway when a step crosses 1.
 """
 import dataclasses
 import warnings
@@ -28,6 +30,7 @@ import numpy as np
 
 from . import config, geo
 from . import kernels as K
+from .bfgs import bfgs
 from .catalog import Catalog, Region
 from .davidn import davidn
 from .params import ETASParams, Settings
@@ -80,6 +83,8 @@ class StochasticDeclustering:
         self.converged = None
         self.ndiv_error = None
         self.checks = None
+        self.K = None                           # K form: K, kept for when A is undefined
+        self.bfgs_H = None                      # BFGS inverse Hessian, kept between outers
 
     @classmethod
     def from_config(cls, source=None, log=None, **overrides):
@@ -138,11 +143,45 @@ class StochasticDeclustering:
     def update_probabilities(self):
         """phi_i = mu u_i / lambda_i."""
         c = self.catalog
+        if self.settings.form == "K":
+            b = np.sqrt(self._theta())
+            lam = self._func15_k(b, self.xint0)[2]
+            self.background_prob[:] = b[0] ** 2 * self.background_rate / lam
+            return
         self.settings.probcalc()(np.sqrt(self.params.to_array()), self.background_rate, c.x, c.y,
                                  c.t, c.m, self.background_prob)
 
-    def _func15(self, sqrt_params, xint0, refine=1):
+    def _theta(self):
+        """The optimiser's parameters: params, with K in A's place in the K form."""
+        th = self.params.to_array().copy()
+        if self.settings.form == "K":
+            th[1] = self.K if np.isnan(th[1]) else th[1] * (th[4] - 1) * (th[6] - 1)
+        return th
+
+    def _set_theta(self, th):
+        """Inverse of _theta. In the K form A = K / ((p-1)(q-1)) exists only for p, q > 1;
+        otherwise A is NaN and K holds the fit."""
+        th = np.array(th, dtype=float)
+        if self.settings.form == "K":
+            self.K = th[1]
+            th[1] = th[1] / ((th[4] - 1) * (th[6] - 1)) if th[4] > 1 and th[6] > 1 else np.nan
+        self.params = ETASParams.from_array(th)
+
+    def _func15_k(self, sqrt_theta, xint0, refine=1):
+        """K form: (-log L, gradient, lambda at every event)."""
         c, r, s = self.catalog, self.region, self.settings
+        grad = np.empty(8)
+        f, lam = s.kernel("func15_k")(
+            np.asarray(sqrt_theta, dtype=np.float64), self.ind, self.background_rate, xint0,
+            c.x, c.y, c.t, c.m, r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start, grad,
+            *K.gauss_nodes(refine * s.sgl_nodes), s.log_floor, s.log_penalty)
+        return f, list(grad), lam
+
+    def _func15(self, sqrt_params, xint0, refine=1):
+        """(-log L, gradient) at sqrt(_theta()) values, in the configured form."""
+        c, r, s = self.catalog, self.region, self.settings
+        if s.form == "K":
+            return self._func15_k(sqrt_params, xint0, refine)[:2]
         grad = np.empty(8)
         args = (np.asarray(sqrt_params, dtype=np.float64), self.ind, self.background_rate, xint0,
                 c.x, c.y, c.t, c.m, r.polygon_x, r.polygon_y, r.npoly, r.t_end, r.t_start, grad)
@@ -169,26 +208,30 @@ class StochasticDeclustering:
             *K.gauss_nodes(s.sgl_nodes), s.log_floor, s.log_penalty, s.xlamb == "logs")
 
     def maximise(self):
-        """Quasi-Newton (DFP) MLE on sqrt(params), which keeps every parameter positive."""
+        """Quasi-Newton MLE on sqrt(theta), which keeps every parameter positive: BFGS
+        (default) or davidn (DFP, the original's)."""
         s = self.settings
-        x = list(np.sqrt(self.params.to_array()))
+        x = list(np.sqrt(self._theta()))
         last = []
 
         def f(b, log):
             r = self.neg_log_likelihood(b)
             last[:] = [r[0]]
             return r
-        davidn(x, f, self.log, s.tol, s.max_sweeps, s.ls_step, s.ls_shrink, s.ls_expand,
-               value=self._value if s.quadrature == "sgl" else None)
-        self.params = ETASParams.from_array(np.array(x) ** 2)
-        self.neg_loglik = last[0]               # davidn's last call is at the returned x
+        if s.optimiser == "bfgs":
+            self.bfgs_H = bfgs(x, f, self.log, self.bfgs_H, s.tol, s.max_sweeps, s.ls_step)
+        else:
+            davidn(x, f, self.log, s.tol, s.max_sweeps, s.ls_step, s.ls_shrink, s.ls_expand,
+                   value=self._value if s.quadrature == "sgl" and s.form == "A" else None)
+        self._set_theta(np.array(x) ** 2)
+        self.neg_loglik = last[0]               # the last call is at the returned x
 
     def check_ndiv(self):
         """Relative change of -log L (current params and background) when the polygon
         quadrature size is doubled (sgl nodes, or ndiv pieces). Large = quadrature too
         coarse for the narrowest kernels near the boundary."""
         s = self.settings
-        sq = np.sqrt(self.params.to_array())
+        sq = np.sqrt(self._theta())
         x2 = self._bkgd(np.empty(len(self.catalog)), 2)
         f1 = self._func15(sq, self.xint0)[0]
         f2 = self._func15(sq, x2, 2)[0]
@@ -206,14 +249,18 @@ class StochasticDeclustering:
         p, q > 1 it has no lower limit, so an invalid fit can settle or keep "improving". Fills
         self.checks; a failure warns and makes converged False."""
         c, s = self.catalog, self.settings
-        th = self.params.to_array()
-        b = np.sqrt(th)
-        f, g = self._func15(b, self.xint0)
-        phi = np.empty(len(c))
-        s.probcalc()(b, self.background_rate, c.x, c.y, c.t, c.m, phi)
+        th = self._theta()
         t = self.ind == 1
         with np.errstate(all="ignore"):
-            lam = th[0] * self.background_rate[t] / phi[t]
+            b = np.sqrt(th)
+            if s.form == "K":
+                f, g, lam = self._func15_k(b, self.xint0)
+                lam = lam[t]
+            else:
+                f, g = self._func15(b, self.xint0)
+                phi = np.empty(len(c))
+                s.probcalc()(b, self.background_rate, c.x, c.y, c.t, c.m, phi)
+                lam = th[0] * self.background_rate[t] / phi[t]
             logs = np.where(lam > s.log_floor, np.log(lam), -s.log_penalty)
         integral = f + float(logs.sum())
         ratio = integral / int(t.sum())
@@ -223,8 +270,9 @@ class StochasticDeclustering:
         failed = []
         if not (np.all(np.isfinite(th)) and np.isfinite(f)):
             failed.append("parameters or -log L not finite")
-        # This kernel is normalised over infinite time and space, which needs both above 1.
-        if not (th[4] > 1 and th[6] > 1):
+        # The A form is normalised over infinite time and space, which needs both above 1.
+        # The K form is valid for any p, q (A is then undefined and only K is reported).
+        if s.form == "A" and not (th[4] > 1 and th[6] > 1):
             failed.append(f"p = {th[4]:.4g}, q = {th[6]:.4g}: the kernel needs both above 1")
         if self.checks["n_lambda_not_positive"]:
             failed.append(f"{self.checks['n_lambda_not_positive']} targets have lambda <= 0")
@@ -248,7 +296,7 @@ class StochasticDeclustering:
         if metric == "dphi":
             ch = np.inf if ref is None else float(np.max(np.abs(self.background_prob - ref)))
             return ch, self.background_prob.copy()
-        f = self._func15(np.sqrt(self.params.to_array()), self.xint0)[0]
+        f = self._func15(np.sqrt(self._theta()), self.xint0)[0]
         return (np.inf if ref is None else abs(f - ref) / abs(f)), f
 
     def fit(self):
@@ -258,6 +306,9 @@ class StochasticDeclustering:
         and then the MLE. Always starts over from the initial parameters and phi = 1."""
         s = self.settings
         self._reset()
+        if s.form == "K" and not self._theta()[1] > 0:
+            raise ValueError("K form: the initial parameters need p > 1 and q > 1 "
+                             "(K = A (p-1)(q-1) must be positive)")
         s.use_threads()
         self.compute_bandwidths()
         n_outer = s.max_outer if s.converge else len(s.schedule)
@@ -293,8 +344,7 @@ class StochasticDeclustering:
         if s.converge and not self.converged:
             warnings.warn(f"not converged after max_outer={s.max_outer} iterations")
         if self.neg_loglik is None:
-            self.neg_loglik = self._func15(np.sqrt(self.params.to_array()), self.xint0,
-                                           s.ndiv)[0]
+            self.neg_loglik = self._func15(np.sqrt(self._theta()), self.xint0)[0]
         self.check_fit()
         return self.result()
 
@@ -306,4 +356,5 @@ class StochasticDeclustering:
             self.catalog, self.region, self.settings, self.ind, self.params,
             self.background_prob.copy(), self.background_rate.copy(), self.bandwidth.copy(),
             self.neg_loglik, list(self.history), self.converged, self.n_likelihood_calls,
-            self.ndiv_error, self.projection, self.grid, self.config, self.checks)
+            self.ndiv_error, self.projection, self.grid, self.config, self.checks,
+            self._theta()[1] if self.settings.form == "K" else None)

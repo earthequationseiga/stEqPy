@@ -32,6 +32,7 @@ class DeclusteringResult:
     grid: dict = None               # {"lon": [a, b], "lat": [a, b], "n": [.,.]}
     config: dict = None             # resolved config, when built by from_config
     checks: dict = None             # StochasticDeclustering.check_fit; "failed" lists problems
+    K: float = None                 # K form: K = A (p-1)(q-1); A is NaN if p or q <= 1
 
     # -- declustering outputs ------------------------------------------------------------
     @cached_property
@@ -125,6 +126,8 @@ class DeclusteringResult:
         lines = [f"{k:6s} = {v:.10g}" for k, v in dataclasses.asdict(p).items()]
         lines[2] += "  # days"
         lines[5] += f"  # deg^2 of arc = {p.D_km2:.10g} km^2"
+        if self.K is not None:
+            lines.append(f"K      = {self.K:.10g}  # A (p-1)(q-1), the parameter fitted")
         lines += ["", f"-log L = {self.neg_loglik:.10f}",
                   f"AIC    = {2 * (self.neg_loglik + 8):.4f}",
                   f"converged = {self.converged}", f"likelihood calls = "

@@ -259,7 +259,8 @@ def test_bandwcalc_tree_has_the_same_bits():
 def test_settings_and_agreement_with_original_quadrature():
     assert Settings().quadrature == "sgl" and Settings().xlamb == "logs"
     assert config.PRESETS["original"]["quadrature"] == "ndiv"
-    for bad in (dict(quadrature="x"), dict(sgl_nodes=0), dict(sgl_nodes_background=0), dict(xlamb="x")):
+    for bad in (dict(quadrature="x"), dict(sgl_nodes=0), dict(sgl_nodes_background=0), dict(xlamb="x"),
+                dict(optimiser="x"), dict(form="x"), dict(quadrature="ndiv")):   # K form needs sgl
         try:
             Settings(**bad)
         except ValueError:
@@ -267,12 +268,59 @@ def test_settings_and_agreement_with_original_quadrature():
         raise AssertionError(f"accepted {bad}")
     d, _, cat, reg = small()
     fits = {}
-    for q in ("sgl", "ndiv"):
+    for q in ("sgl", "ndiv"):       # quadrature alone: same form and optimiser
         fits[q] = StochasticDeclustering(
             cat, reg, ETASParams.from_array(d["b"]),
-            Settings(schedule=(1,), converge=False, ndiv_check=False, quadrature=q)).fit()
+            Settings(schedule=(1,), converge=False, ndiv_check=False, quadrature=q, form="A",
+                     optimiser="davidn")).fit()
     assert np.max(np.abs(fits["sgl"].params.to_array() / fits["ndiv"].params.to_array() - 1)) < 1e-3
     assert np.max(np.abs(fits["sgl"].background_prob - fits["ndiv"].background_prob)) < 1e-4
+
+
+def test_k_form():
+    """K form = A form at p, q > 1 (K = A (p-1)(q-1)); gradient against finite differences, also
+    below and at 1; serial == parallel; and a fixed-parameter fit (optimise=False) gives
+    neg_loglik at the normal node count (it once asked for 48000 nodes: a 35 GB matrix)."""
+    d, _, cat, reg = small()
+    sd = StochasticDeclustering(cat, reg, ETASParams.from_array(d["b"]), Settings(threads=2))
+    sd.settings.use_threads()
+    sd.compute_bandwidths()
+    u = np.empty(len(cat))
+    xint0 = K.bkgdcalc_sgl(cat.x, cat.y, sd.background_prob, sd.bandwidth, reg.polygon_x,
+                           reg.polygon_y, reg.npoly, reg.t_end, reg.t_start, u, *K.gauss_nodes(64))
+    tail = (sd.ind, u, xint0, cat.x, cat.y, cat.t, cat.m, reg.polygon_x, reg.polygon_y,
+            reg.npoly, reg.t_end, reg.t_start)
+    nodes = K.gauss_nodes(48)
+    th = np.array(d["b"], dtype=float)
+    tk = th.copy()
+    tk[1] = th[1] * (th[4] - 1) * (th[6] - 1)
+    fa = K.func15_sgl(np.sqrt(th), *tail, np.empty(8), *nodes, 1e-25, 100.0, False)
+    g1, g2 = np.empty(8), np.empty(8)
+    fk, lam = K.func15_k(np.sqrt(tk), *tail, g1, *nodes)
+    fk2, lam2 = K.func15_k_par(np.sqrt(tk), *tail, g2, *nodes)
+    assert abs(fk / fa - 1) < 1e-12, (fk, fa)
+    assert fk == fk2 and np.array_equal(g1, g2) and np.array_equal(lam, lam2)
+    for p_, q_ in ((th[4], th[6]), (0.8, 1.5), (1.0, 1.0), (1.3, 0.7)):
+        t = tk.copy()
+        t[4], t[6] = p_, q_
+        b = np.sqrt(t)
+        g = np.empty(8)
+        K.func15_k(b, *tail, g, *nodes)
+        for k in range(8):
+            e = 1e-6 * b[k]
+            bp, bm = b.copy(), b.copy()
+            bp[k] += e
+            bm[k] -= e
+            fd = (K.func15_k(bp, *tail, np.empty(8), *nodes)[0]
+                  - K.func15_k(bm, *tail, np.empty(8), *nodes)[0]) / (2 * e)
+            assert abs(g[k] - fd) < 1e-5 * max(1.0, abs(fd)), (p_, q_, k, g[k], fd)
+
+    fixed = StochasticDeclustering(cat, reg, ETASParams.from_array(d["b"]),
+                                   Settings(schedule=(1,), converge=False, ndiv_check=False,
+                                            optimise=False))
+    r = fixed.fit()
+    assert r.neg_loglik == fixed._func15(np.sqrt(fixed._theta()), fixed.xint0)[0]
+    assert abs(r.K / tk[1] - 1) < 1e-15 and r.params.A == th[1]
 
 
 def test_check_fit():
@@ -298,10 +346,12 @@ def test_check_fit():
     assert sd.checks["failed"] == [] and sd.converged
     assert abs(sd.checks["integral_over_n"] - 1) < 1e-3
 
+    # p, q <= 1 is invalid only in the A form (the K form allows it).
     th = sd.params.to_array()
-    for k, v, word in ((4, 0.9, "above 1"), (6, 0.9, "above 1"), (1, 1e6, "should be 1")):
+    for k, v, word, form in ((4, 0.9, "above 1", "A"), (6, 0.9, "above 1", "A"), (1, 1e6, "should be 1", "K")):
         bad = th.copy()
         bad[k] = v
+        sd.settings = dataclasses.replace(sd.settings, form=form)
         sd.params = ETASParams.from_array(bad)
         sd.converged = True
         with warnings.catch_warnings(record=True) as w:
@@ -326,5 +376,6 @@ if __name__ == "__main__":
     test_rate_terms_keep_the_original_bits()
     test_bandwcalc_tree_has_the_same_bits()
     test_settings_and_agreement_with_original_quadrature()
+    test_k_form()
     test_check_fit()
     print("ok")

@@ -1095,3 +1095,148 @@ def func15_sgl_value_par(b, ind, zbkgd, xint0, xx, yy, zz, zmg, tx, ty, npoly, t
         _func15_value_event(i, b, ind, zbkgd, xx, yy, zz, zmg, tx, ty, npoly, tz, tstart, gx, gw,
                             lam, xi, use_logs, pr1c, ssigc, bbbc)
     return _func15_value_total(b, ind, xint0, log_floor, log_penalty, lam, xi)
+
+
+# ---------------------------------------------------------------------------------------
+# K form. Zhuang's kernel is normalised over infinite time and space,
+#     A e^(alpha m) (p-1)/c (1+t/c)^-p (q-1)/(pi s) (1+r^2/s)^-q,   s = D e^(gamma m),
+# which needs p, q > 1: below 1 the density is negative and -log L has no lower limit, so an
+# optimiser step across 1 can run away (NaN, p ~ 1e5). Without the normalising factors,
+#     K e^(alpha m) 1/c (1+t/c)^-p 1/(pi s) (1+r^2/s)^-q,   K = A (p-1)(q-1),
+# is positive for every p, q, and its integrals over the finite window and polygon are finite,
+# including at exactly 1. For p, q > 1 it is the same model, so the MLE is the same
+# (A = K / ((p-1)(q-1))). Here x = sqrt(theta) with K in A's place.
+# Integrals use L = log(1 + tau/c): int_0^tau 1/c (1+t/c)^-p dt = L phi((1-p) L), with
+# phi(x) = (e^x - 1)/x, smooth through p = 1; the polygon integral is the same in r^2/s.
+# ---------------------------------------------------------------------------------------
+
+@njit(cache=True)
+def _phi(x):
+    """(e^x - 1) / x, smooth through x = 0."""
+    return 1.0 + x / 2.0 + x * x / 6.0 if abs(x) < 1e-5 else math.expm1(x) / x
+
+
+@njit(cache=True)
+def _dphi(x):
+    """Derivative of _phi."""
+    return 0.5 + x / 3.0 + x * x / 8.0 if abs(x) < 1e-3 else (math.exp(x) * (x - 1.0) + 1.0) / (x * x)
+
+
+@njit(cache=True)
+def _w_k(tau, c, p):
+    """Integral of 1/c (1+t/c)^-p over [0, tau], and its c and p derivatives."""
+    L = math.log(1.0 + tau / c)
+    x = (1.0 - p) * L
+    return L * _phi(x), math.exp(x) * (1.0 / (c + tau) - 1.0 / c), -L * L * _dphi(x)
+
+
+@njit(cache=True)
+def _space_k(gamma, d, q, m, xp, yp, npoly, xc, yc, gx, gw):
+    """Integral of 1/(pi s) (1+r^2/s)^-q over the polygon (s-GL along each edge, as
+    polyint_sgl4), and its D, q, gamma derivatives."""
+    s = d * math.exp(gamma * m)
+    c0 = 1.0 / 2.0 / PI
+    s0 = s1 = s2 = s3 = 0.0
+    for j in range(npoly):
+        sg, h, sa, sb = _edge_sgl(xp[j], yp[j], xp[j + 1], yp[j + 1], xc, yc)
+        if sg == 0.0:
+            continue
+        ds = sb - sa
+        mid = sa + ds * 0.5
+        for k in range(gx.shape[0]):
+            ch = math.cosh(mid + 0.5 * ds * gx[k])
+            r = h * ch
+            u = r * r / s
+            L = math.log(1.0 + u)
+            x = (1.0 - q) * L
+            tq = math.exp(-q * L)
+            wt = sg * 0.5 * ds * gw[k] / ch * c0
+            s0 += wt * L * _phi(x)
+            s1 += wt * (-u / d * tq)
+            s2 += wt * (-L * L * _dphi(x))
+            s3 += wt * (-m * u * tq)
+    return s0, s1, s2, s3
+
+
+@njit(cache=True)
+def _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg):
+    """Event i's lambda (and its gradient terms) and its triggered integral (and gradient)."""
+    mu, a, c, alfa, p, d, q, gamma = th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]
+    s = mu * u[i]
+    t2 = t3 = t4 = t5 = t6 = t7 = t8 = 0.0
+    for j in range(i):
+        delt = zz[i] - zz[j]
+        L1 = math.log(1.0 + delt / c)
+        sj = d * math.exp(gamma * mm[j])
+        r = ((xx[i] - xx[j]) ** 2 + (yy[i] - yy[j]) ** 2) / sj
+        L2 = math.log(1.0 + r)
+        tt = math.exp(alfa * mm[j] - p * L1 - q * L2) / c / (PI * sj)
+        at = a * tt
+        s += at
+        v = -1.0 + q * r / (1.0 + r)
+        t2 += tt
+        t3 += at * (-1.0 / c + p / c - p / (c + delt))
+        t4 += at * mm[j]
+        t5 += at * (-L1)
+        t6 += at * v / d
+        t7 += at * (-L2)
+        t8 += at * mm[j] * v
+    lam[i] = s
+    lg[i, 0], lg[i, 1], lg[i, 2], lg[i, 3] = u[i], t2, t3, t4
+    lg[i, 4], lg[i, 5], lg[i, 6], lg[i, 7] = t5, t6, t7, t8
+    s0, s1, s2, s3 = _space_k(gamma, d, q, mm[i], tx, ty, npoly, xx[i], yy[i], gx, gw)
+    w, wc, wp = _w_k(tz - zz[i], c, p)
+    if zz[i] <= tstart:             # only the part of its window after tstart counts
+        w1, wc1, wp1 = _w_k(tstart - zz[i], c, p)
+        w, wc, wp = w - w1, wc - wc1, wp - wp1
+    k0 = math.exp(alfa * mm[i])
+    ak = a * k0
+    xi[i] = ak * w * s0
+    xg[i, 0] = 0.0
+    xg[i, 1] = k0 * w * s0
+    xg[i, 2] = ak * wc * s0
+    xg[i, 3] = ak * mm[i] * w * s0
+    xg[i, 4] = ak * wp * s0
+    xg[i, 5] = ak * w * s1
+    xg[i, 6] = ak * w * s2
+    xg[i, 7] = ak * w * s3
+
+
+@njit(cache=True)
+def _k_total(b, ind, xint0, grad, floor, penalty, lam, lg, xi, xg):
+    ff = 0.0
+    fv = xint0 * b[0] * b[0]
+    df = np.zeros(8)
+    for i in range(lam.shape[0]):
+        fv += xi[i]
+        df -= xg[i]
+        if ind[i] == 1:
+            ff += math.log(lam[i]) if lam[i] > floor else -penalty
+            df += lg[i] / lam[i]
+    df[0] -= xint0
+    grad[:] = -df * 2.0 * b
+    return fv - ff
+
+
+@njit(cache=True)
+def func15_k(b, ind, u, xint0, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, grad, gx, gw,
+             log_floor=1e-25, log_penalty=100.0):
+    """K form: (-log L, lambda at every event); gradient w.r.t. b = sqrt(theta) into grad."""
+    n = xx.shape[0]
+    th = b * b
+    lam, lg, xi, xg = np.empty(n), np.empty((n, 8)), np.empty(n), np.empty((n, 8))
+    for i in range(n):
+        _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg)
+    return _k_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg), lam
+
+
+@njit(cache=True, parallel=True)
+def func15_k_par(b, ind, u, xint0, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, grad, gx, gw,
+                 log_floor=1e-25, log_penalty=100.0):
+    """Parallel func15_k (same result)."""
+    n = xx.shape[0]
+    th = b * b
+    lam, lg, xi, xg = np.empty(n), np.empty((n, 8)), np.empty(n), np.empty((n, 8))
+    for i in prange(n):
+        _k_event(i, th, u, xx, yy, zz, mm, tx, ty, npoly, tz, tstart, gx, gw, lam, lg, xi, xg)
+    return _k_total(b, ind, xint0, grad, log_floor, log_penalty, lam, lg, xi, xg), lam

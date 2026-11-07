@@ -46,8 +46,11 @@ def test_probabilities_sum_to_one(res):
 def test_final_probs_use_final_params(res):
     # the MLE moved the parameters, so these differ from the pre-MLE probs.dat values
     assert np.max(np.abs(res.final_background_prob - res.background_prob)) > 1e-6
-    frozen = small_fit(optimise=False)
+    # Same kernel (A form): same bits. K form fit, A form outputs: same model, rounding only.
+    frozen = small_fit(optimise=False, form="A", optimiser="davidn")
     assert np.array_equal(frozen.final_background_prob, frozen.background_prob)
+    frozen = small_fit(optimise=False)
+    assert np.max(np.abs(frozen.final_background_prob - frozen.background_prob)) < 1e-14
 
 
 def test_seeds_and_threads(res):
