@@ -1,0 +1,27 @@
+# KMA (Korea) example: 2012-2026, M >= 2.0, polygon drawn on the website (job WhR8luDjgWcu).
+# Locations are rounded (2, 1 or 0 decimals; 690 of 2406 events at repeated locations), so
+# lon/lat jitter is needed: without it D collapses to 0 and check_fit fails.
+# Do not start earlier or cut lower: the catalogue is incomplete below about M2.8-3.1 before
+# 2004 and the reported rate grows ~25x, which the fit reads as triggering (1978-2026 at
+# M1.5: alpha -> 0, p 0.87, 5% certain background). Data: data/korea_kma/README.txt.
+# Run: python -m steqpy configs/kma.toml --out results/kma --threads 10
+[input]
+catalog = "../data/korea_kma/kma_m1.5.etas"   # t = days since 1978-08-28 17:29:43 UTC
+polygon = "kma_polygon.txt"
+t_min = 0.0
+t_start = 12178.271030092592                   # 2012-01-01
+t_end = 17602.27103009                         # 2026-11-07
+mag_min = 2.0
+jitter_lon = "precision"
+jitter_lat = "precision"
+jitter_seed = 1
+
+[params]                                       # start values: JMA's
+mu = 0.59284459
+A = 0.204288231
+c = 0.022692883
+alpha = 1.495169224
+p = 1.109752319
+D = "0.001175925 deg2"
+q = 1.86004421
+gamma = 1.041549634

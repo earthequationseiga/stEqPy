@@ -10,7 +10,8 @@ t_start = 10000.0                   # target window [t_start, t_end] (days); ear
 t_end = 23376.0                     #   and events outside the polygon only trigger
 mag_min = 4.5                       # magnitude cutoff
 # Optional jitter (off by default): uniform noise in [-h, +h] added to every row before the
-# cuts above, to break ties from rounded values. h per column; 0 = untouched.
+# cuts above, to break ties from rounded values. h per column; 0 = untouched; for lon, lat,
+# mag also "precision": half the last decimal of each value (as R's ETAS::catalog).
 # jitter_lon = 0.0                  # deg
 # jitter_lat = 0.0                  # deg
 # jitter_mag = 0.0                  # magnitude units (e.g. 0.05 for 0.1 bins)

@@ -168,12 +168,24 @@ def test_jitter():
     assert m[2].min() > 4.5 - 1e-6 and np.all(np.diff(m[3]) >= 0)
     assert m[3].min() > 0 and m[3].max() <= 23376.0
     assert abs(len(m[0]) - len(base[0])) < 0.2 * len(base[0])
-    for bad in (-0.1, float("nan")):
+    for key, bad in (("lon", -0.1), ("lon", float("nan")), ("lon", "wide"), ("t", "precision")):
         try:
-            read_catalog(cat, 4.5, 0.0, 23376.0, {"lon": bad}, 0)
-            raise AssertionError("bad jitter width accepted")
+            read_catalog(cat, 4.5, 0.0, 23376.0, {key: bad}, 0)
+            raise AssertionError(f"bad jitter {key}={bad!r} accepted")
         except ValueError:
             pass
+    # "precision": half the last decimal of each value (R's rule)
+    from steqpy.readers import decimals, jitter_rows
+    assert [decimals(v) for v in (129.7, 129.75, 129.0, 4.5, 1e-05, 35.123456)] == [1, 2, 0, 1, 5, 6]
+    rows = np.array([[129.7, 35.0, 4.5, 0.0], [129.75, 35.12, 4.55, 0.0], [129.0, 36.5, 5.0, 0.0]] * 200)
+    rows[:, 3] = np.arange(len(rows))                            # sorted times, untouched (t: 0)
+    jr = jitter_rows(rows, {"lon": "precision", "lat": "precision"}, 5)
+    for c, widths in ((0, (0.05, 0.005, 0.5)), (1, (0.5, 0.005, 0.05))):
+        for k, h in enumerate(widths):
+            d = np.abs(jr[k::3, c] - rows[k, c])
+            assert d.max() <= h and d.max() > 0.8 * h, (c, k, d.max(), h)
+    assert np.array_equal(jr[:, 2], rows[:, 2])                 # mag untouched
+    assert np.array_equal(jr, jitter_rows(rows, {"lon": "precision", "lat": "precision"}, 5))
     # through the config: keys accepted, written back by dump, fit inputs change
     raw = config.tomllib.loads(TOML.read_text())
     for k in ("catalog", "polygon"):                # a dict source resolves paths from cwd

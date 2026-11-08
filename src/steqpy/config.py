@@ -5,7 +5,8 @@ what is needed to find the data:
 
     preset = "default"            # or "original" (bit-exact reproduction of the Fortran)
     [input]   control | catalog, polygon, t_min, t_start, t_end, mag_min;
-              optional jitter_lon, jitter_lat (deg), jitter_mag, jitter_t (days), jitter_seed
+              optional jitter_lon, jitter_lat (deg), jitter_mag (half-widths, or "precision"
+              for half the last decimal of each value), jitter_t (days), jitter_seed
     [params]  initial ETAS parameters mu, A, c, alpha, p, D, q, gamma
     [grid]    lon = [min, max], lat = [min, max], n = [nlon, nlat]   (rate map)
     [model] [convergence] [run] [advanced]    algorithm settings (Settings fields)

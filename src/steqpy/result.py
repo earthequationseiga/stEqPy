@@ -1,5 +1,7 @@
 """What a fit produces: a snapshot of the estimates, plus rate maps and output files."""
 import dataclasses
+import json
+import math
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -10,6 +12,32 @@ from . import config
 from . import kernels as K
 from .catalog import Catalog, Region
 from .params import ETASParams, Settings
+
+# Summary bands of P(aftershock) = 1 - phi over the target events (user choice): certain
+# background below 0.1, certain aftershock above 0.9, uncertain in between (both ends included).
+BAND_LO, BAND_HI = 0.1, 0.9
+HIST_BINS = 20
+DEG_KM = 111.195                    # km per degree of great-circle arc (geo's unit)
+
+
+def _clean(v):
+    """JSON-ready copy: numpy types to Python, NaN and inf to None (JSON has no NaN)."""
+    if isinstance(v, dict):
+        return {k: _clean(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return [_clean(x) for x in v]
+    if isinstance(v, (np.bool_, bool)):
+        return bool(v)
+    if isinstance(v, (np.integer, int)):
+        return int(v)
+    if isinstance(v, (np.floating, float)):
+        return float(v) if math.isfinite(v) else None
+    return v
+
+
+def _sig(a, digits=6):
+    """Values rounded to `digits` significant digits (keeps result.json small)."""
+    return [float(f"{x:.{digits}g}") if math.isfinite(x) else None for x in np.asarray(a, float)]
 
 
 @dataclass(frozen=True, eq=False)
@@ -120,15 +148,93 @@ class DeclusteringResult:
             return LON, LAT, self.rates(gx, lats)
         return LON, LAT, self.rates_lonlat(LON, LAT)
 
+    def summary(self):
+        """Target events by P(aftershock) = 1 - phi (final parameters): counts in the bands
+        below BAND_LO (certain background), BAND_LO..BAND_HI (uncertain) and above BAND_HI
+        (certain aftershock), the expected numbers (sums of probabilities, no cutoff), and a
+        histogram with HIST_BINS equal bins on [0, 1]."""
+        pa = 1.0 - self.final_background_prob[self.ind == 1]
+        counts, edges = np.histogram(pa, bins=HIST_BINS, range=(0.0, 1.0))
+        return {"n_targets": pa.size,
+                "certain_background": int(np.sum(pa < BAND_LO)),
+                "uncertain": int(np.sum((pa >= BAND_LO) & (pa <= BAND_HI))),
+                "certain_aftershock": int(np.sum(pa > BAND_HI)),
+                "bands": [BAND_LO, BAND_HI],
+                "expected_background": float(np.sum(1.0 - pa)),
+                "expected_aftershocks": float(np.sum(pa)),
+                "histogram_p_aftershock": {"edges": edges, "counts": counts}}
+
+    def to_dict(self):
+        """Everything a viewer (e.g. the website) needs, JSON-ready: fit status, parameters,
+        errors, summary, every event, the region, and what a viewer needs to draw the
+        background-rate map itself at any resolution (no grid is sent):
+            mu * u(x) = mu / T * sum_j phi_j exp(-r_j^2 / (2 h_j^2)) / (2 pi h_j^2),
+        r_j = distance in model coordinates (`projection`) to event j, h_j = `bandwidth`,
+        phi_j = `p_background`, T = `background.T_days`. Uses the final phi, as the summary
+        does (rates()/rates.dat use phi from before the last MLE step: about 1e-7 apart)."""
+        from . import __version__
+        c, r, phi = self.catalog, self.region, self.final_background_prob
+        if self.projection is not None:
+            coords = "lonlat"
+            ex, ey = self.projection.inverse(c.x, c.y)
+            px, py = self.projection.inverse(r.polygon_x, r.polygon_y)
+        else:                                       # built without a projection: model x, y
+            coords, ex, ey, px, py = "model", c.x, c.y, r.polygon_x, r.polygon_y
+        inp = (self.config or {}).get("input", {})
+        params = dataclasses.asdict(self.params)
+        if self.K is not None and np.isnan(self.params.A):
+            params["K"] = self.K                    # A undefined for p or q <= 1
+        checks = self.checks or {"failed": [], "warnings": []}
+        b = self.bootstrap
+        d = {
+            "steqpy_version": __version__,
+            "fit": {"valid": not checks["failed"], "failed": checks["failed"],
+                    "warnings": checks.get("warnings", []), "converged": self.converged,
+                    "neg_loglik": self.neg_loglik, "aic": 2 * (self.neg_loglik + 8),
+                    "likelihood_calls": self.n_likelihood_calls,
+                    "n_events": len(c), "n_targets": int(np.sum(self.ind == 1))},
+            "params": params,
+            "units": {"c": "days", "D": f"deg^2 of arc (1 deg = {DEG_KM} km)",
+                      "t_days": "days since t_min",
+                      "bandwidth": "deg of arc (model coordinates)",
+                      "coords": "lon/lat in degrees" if coords == "lonlat" else "model x, y"},
+            "errors": {
+                "hessian": self.hessian_errors,
+                "hessian_note": "background held fixed, so too small; "
+                                "Wang, Schoenberg & Jackson (2010), BSSA 100(5A), 1989-2001",
+                "bootstrap": None if not b or not b["se"] else
+                {"se": b["se"], "ci95": b["ci"], "n_good": b["n_good"], "n": len(b["params"]),
+                 "reference": "Dutilleul, Genest & Peng (2024), GJI 236, 1601-1608"}},
+            "summary": self.summary(),
+            "events": {"coords": coords,
+                       "x" if coords == "model" else "lon": _sig(ex, 8),
+                       "y" if coords == "model" else "lat": _sig(ey, 8),
+                       "t_days": _sig(c.t, 10), "t_min": inp.get("t_min"),
+                       "mag_above_cutoff": _sig(c.m, 4), "mag_cutoff": inp.get("mag_min"),
+                       "target": (self.ind == 1).astype(int),
+                       "p_background": _sig(phi, 8),
+                       "bandwidth": _sig(self.bandwidth, 8)},
+            "region": {"polygon": np.column_stack([px, py]), "t_start": r.t_start, "t_end": r.t_end},
+            "projection": None if self.projection is None else
+            {"kind": self.projection.kind, "lon0": self.projection.lon0, "lat0": self.projection.lat0,
+             "note": "laea: Lambert azimuthal equal-area at (lon0, lat0), radius 180/pi deg; "
+                     "flat: x = lon cos(lat0), y = lat"},
+            "background": {"mu": self.params.mu, "T_days": r.t_end - r.t_start,
+                           "units": "mu * u in events per day per deg^2 of arc"},
+        }
+        return _clean(d)
+
     def write_outputs(self, out):
-        """probs.dat, rates.dat (original formats), params.txt, config.toml (resolved:
-        re-running it reproduces this fit)."""
+        """probs.dat, rates.dat (original formats), params.txt, result.json (see to_dict),
+        config.toml (resolved: re-running it reproduces this fit)."""
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         with open(out / "probs.dat", "w") as fh:
             for i in range(len(self.catalog)):
                 fh.write(f" {i + 1:8d}{self.background_prob[i]:20.10f}"
                          f"{self.bandwidth[i]:20.10f}{self.background_rate[i]:20.10f}\n")
+        (out / "result.json").write_text(
+            json.dumps(self.to_dict(), allow_nan=False, separators=(",", ":")), encoding="utf-8")
         if self.grid:
             _, _, rates = self.rate_grid()
             mx, my = self.grid["n"]

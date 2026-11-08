@@ -104,6 +104,50 @@ def test_k_form_outputs(res):
     assert np.all((pa >= -1) & (pa < np.arange(len(pa))))
 
 
+def test_result_json(res):
+    """result.json: strict JSON (no NaN), summary bands and histogram add up over the targets,
+    per-event values match the result, background map = mu * u on the grid, events and
+    polygon mapped back to lon/lat (flat projection of the JMA polygon, as readata uses)."""
+    import json
+    import tempfile
+    from steqpy import geo
+    plon, plat = geo.read_polygon(str(ROOT / "configs/jma_polygon.txt"))
+    proj = geo.Projection("flat", plon, plat)
+    full = dataclasses.replace(res, projection=proj,
+                               grid={"lon": [138.0, 142.0], "lat": [34.0, 38.0], "n": [5, 4]})
+    with tempfile.TemporaryDirectory() as tmp:
+        full.write_outputs(tmp)
+        d = json.loads(Path(tmp, "result.json").read_text(encoding="utf-8"),
+                       parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+    s, e, phi = d["summary"], d["events"], res.final_background_prob
+    tg = res.ind == 1
+    assert s["n_targets"] == tg.sum() == d["fit"]["n_targets"]
+    assert s["certain_background"] + s["uncertain"] + s["certain_aftershock"] == s["n_targets"]
+    assert sum(s["histogram_p_aftershock"]["counts"]) == s["n_targets"]
+    assert s["certain_aftershock"] == np.sum(1 - phi[tg] > 0.9)
+    assert abs(s["expected_background"] - phi[tg].sum()) < 1e-9
+    assert np.allclose(e["p_background"], phi, rtol=1e-5, atol=1e-12) and e["target"] == list(tg.astype(int))
+    lon, lat = np.array(e["lon"]), np.array(e["lat"])
+    x, y = proj(lon, lat)
+    assert np.max(np.abs(x - res.catalog.x)) < 1e-5 and np.max(np.abs(y - res.catalog.y)) < 1e-5
+    assert len(d["region"]["polygon"]) == len(res.region.polygon_x)
+    # The background map as a viewer draws it, from the JSON alone, against steqpy's kernel
+    # (given the same, final phi).
+    assert d["projection"]["kind"] == "flat" and "background_map" not in d
+    b = d["background"]
+    glon, glat = np.meshgrid(np.linspace(138, 142, 7), np.linspace(34, 38, 6), indexing="ij")
+    gx, gy = proj(glon.ravel(), glat.ravel())
+    ex, ey = proj(lon, lat)
+    h, ph = np.array(e["bandwidth"]), np.array(e["p_background"])
+    r2 = (gx[:, None] - ex) ** 2 + (gy[:, None] - ey) ** 2
+    viewer = b["mu"] / b["T_days"] * np.sum(ph * np.exp(-r2 / (2 * h * h)) / (2 * np.pi * h * h), axis=1)
+    same_phi = dataclasses.replace(full, background_prob=phi)
+    steqpy_pts = res.params.mu * same_phi.rates_lonlat(glon.ravel(), glat.ravel())[:, 0]
+    assert np.allclose(viewer, steqpy_pts, rtol=1e-5), np.max(np.abs(viewer / steqpy_pts - 1))
+    assert d["fit"]["valid"] in (True, False) and set(d["params"]) >= {"mu", "A", "p", "q"}
+    print("result.json:", {k: s[k] for k in ("certain_background", "uncertain", "certain_aftershock")})
+
+
 if __name__ == "__main__":
     fit = small_fit()
     undecided = int(np.sum((fit.final_background_prob > 0.05) & (fit.final_background_prob < 0.95)))
@@ -114,4 +158,5 @@ if __name__ == "__main__":
     test_seeds_and_threads(fit)
     test_draws_converge_to_probabilities(fit)
     test_k_form_outputs(fit)
+    test_result_json(fit)
     print("ok")

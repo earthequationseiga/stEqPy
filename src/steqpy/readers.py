@@ -25,17 +25,36 @@ class ListReader:
 JITTER_COLS = ("lon", "lat", "mag", "t")       # column order of the rows read_catalog loads
 
 
+def decimals(v):
+    """Decimals of v as Python prints it (shortest repr, trailing zeros gone): 129.7 -> 1,
+    129.75 -> 2, 129.0 -> 0. Like R's ETAS::catalog, so a value printed as 129.70 counts 1."""
+    s = repr(float(v)).lower()
+    mant, _, exp = s.partition("e")
+    frac = mant.partition(".")[2].rstrip("0")
+    return max(len(frac) - (int(exp) if exp else 0), 0)
+
+
 def jitter_rows(rows, jitter, seed, where="catalogue"):
-    """Add U(-h, h) noise to the lon, lat, mag, t columns (h = jitter[name], 0 = untouched),
-    then re-sort by time. Used to break ties from rounded values (e.g. magnitudes in 0.1
-    steps, locations to 0.01 deg): rounding puts events at identical times or places, which
-    an ETAS fit reads as extreme clustering. R's ETAS::catalog does this by default for
-    lon/lat with h = half the last printed decimal; here it is opt-in with explicit widths.
-    Noise is drawn for all four columns whatever the widths, so changing one width leaves
-    the other columns' noise unchanged for the same seed."""
-    h = np.array([float(jitter.get(k, 0.0)) for k in JITTER_COLS])
-    if not np.all(np.isfinite(h)) or np.any(h < 0):
-        raise ValueError(f"jitter half-widths must be finite and >= 0, got {dict(zip(JITTER_COLS, h))}")
+    """Add U(-h, h) noise to the lon, lat, mag, t columns, then re-sort by time. Used to break
+    ties from rounded values (e.g. magnitudes in 0.1 steps, locations to 0.01 deg): rounding
+    puts events at identical times or places, which an ETAS fit reads as extreme clustering
+    (on KMA, 690 of 2406 events shared a location and the spatial scale D collapsed to 0).
+    h = jitter[name]: a number (same half-width for every value; 0 = untouched), or
+    "precision" for lon, lat, mag: half the last decimal of each value (decimals()), as R's
+    ETAS::catalog does by default for lon/lat. Caveat of that rule: a value that happens to end
+    in 0 counts as coarser (129.0 in a 0.01-deg catalogue gets +-0.5 deg).
+    Noise is drawn for all four columns whatever the widths, so changing one width leaves the
+    other columns' noise unchanged for the same seed."""
+    h = np.zeros(rows.shape)
+    for c, k in enumerate(JITTER_COLS):
+        v = jitter.get(k, 0.0)
+        if v == "precision" and k != "t":
+            h[:, c] = [0.5 * 10.0 ** -decimals(x) for x in rows[:, c]]
+        elif isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v) and v >= 0:
+            h[:, c] = v
+        else:
+            raise ValueError(f"jitter_{k} must be a number >= 0"
+                             + ("" if k == "t" else ' or "precision"') + f", got {v!r}")
     bad = np.flatnonzero(np.diff(rows[:, 3]) < 0)
     if bad.size:                                # same check the reader makes, before re-sorting
         raise ValueError(f"{where}: Reverse data: {rows[bad[0], 3]} {rows[bad[0] + 1, 3]}")

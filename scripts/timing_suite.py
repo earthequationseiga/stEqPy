@@ -7,7 +7,8 @@ Before each case: CPU load (above 15% is flagged) and a fixed speed probe. This 
 running 3-6x slow with the CPU load reading 2%, so load alone does not catch it; a probe more than
 1.5x the run's fastest probe flags that case's timing as suspect.
 Cases: the defaults (BFGS, K form), the old default (davidn, A form) for comparison, flat
-projection, preset "original" (bit-exact Fortran path), thread scaling, then the Fortran.
+projection, preset "original" (bit-exact Fortran path), thread scaling, KMA (configs/kma.toml,
+a second, smaller catalogue: default and preset "original"), then the Fortran (JMA only).
 
 Run from anywhere, about 2 h in total (of which the Fortran about 66 min):
     python -I scripts/timing_suite.py [--dry-run] [--only NAME ...] [--no-fortran]
@@ -27,6 +28,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/jma.toml"
+KMA = ROOT / "configs/kma.toml"
 FORTRAN = ROOT / "build/fortran_mpi/etas8p.exe"
 BOOT = "import sys; sys.path.insert(0, 'src'); from steqpy.__main__ import main; main()"
 BUSY_LOAD = 15
@@ -42,7 +44,9 @@ PYTHON_CASES = [("warmup", 10, []), ("warmup_old", 10, OLD_DEFAULT),
                 ("default_flat", 10, ["--set", 'projection="flat"']),
                 ("original_t10", 10, ["--preset", "original"]),
                 ("default_t1", 1, []), ("default_t2", 2, []), ("default_t4", 4, []),
-                ("default_t8", 8, [])]
+                ("default_t8", 8, []),
+                # a second, smaller catalogue (KMA 2012+, M >= 2.0: 2406 events, 988 targets)
+                ("kma_default", 10, [], KMA), ("kma_original", 10, ["--preset", "original"], KMA)]
 FORTRAN_CASE = "fortran_np10"
 
 
@@ -80,9 +84,9 @@ class PeakMemory(threading.Thread):
             self.peak_kb = max(self.peak_kb, total)
 
 
-def run_python(name, threads, extra, out_root):
+def run_python(name, threads, extra, out_root, config=CONFIG):
     out = out_root / name
-    cmd = [sys.executable, "-I", "-c", BOOT, str(CONFIG), "--out", str(out),
+    cmd = [sys.executable, "-I", "-c", BOOT, str(config), "--out", str(out),
            "--threads", str(threads), *extra]
     load, probe = cpu_load(), speed_probe()
     t0 = time.perf_counter()
@@ -166,7 +170,8 @@ def main():
     if unknown:
         ap.error(f"unknown cases {unknown}; choose from {names}")
     with_fortran = FORTRAN_CASE in wanted and not a.no_fortran
-    missing = [str(p) for p in (CONFIG, ROOT / "data/jma/jap.in") if not p.exists()]
+    missing = [str(p) for p in (CONFIG, KMA, ROOT / "data/jma/jap.in", ROOT / "data/korea_kma/kma_m1.5.etas")
+               if not p.exists()]
     if with_fortran:
         missing += [] if FORTRAN.exists() else [str(FORTRAN) + " (bash scripts/build_fortran.sh)"]
         missing += [] if shutil.which("mpiexec") else ["mpiexec"]
@@ -184,7 +189,7 @@ def main():
     out_root.mkdir(parents=True)
     rows = []
     # The Fortran goes last: the longest case should not cost the others if something stops it.
-    jobs = [(c[0], lambda c=c: run_python(*c, out_root)) for c in cases]
+    jobs = [(c[0], lambda c=c: run_python(*c[:3], out_root, *c[3:])) for c in cases]
     if with_fortran:
         jobs.append((FORTRAN_CASE, lambda: run_fortran(out_root)))
     for name, job in jobs:
