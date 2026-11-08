@@ -116,7 +116,9 @@ def run(result, n, seed=0, log=lambda msg: None):
     its checks or did not converge), se {name: std over the good replicates}, ci {name: (2.5%,
     97.5%) percentiles}, n_good, and the background rate at the fitted catalogue's events:
     u (from the fit), u_se (std over good replicates)."""
-    from .declustering import NAMES, StochasticDeclustering     # avoid an import cycle
+    from .declustering import EXPERIMENTAL, NAMES, StochasticDeclustering     # avoid an import cycle
+    warnings.warn(EXPERIMENTAL.format("bootstrap replicates are not validated yet (on JMA they have "
+                                      "about 10% more events than the data)"))
     rng = np.random.default_rng(seed)
     c, reg = result.catalog, result.region
     T = reg.t_end - reg.t_start

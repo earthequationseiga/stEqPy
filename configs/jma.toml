@@ -52,6 +52,7 @@ max_inner = 11
 
 [run]
 threads = 0                         # 0 = serial; n = Numba threads (same results)
+# EXPERIMENTAL (not validated yet, warn when used; do not publish their numbers):
 # hessian_errors = false            # standard errors from the Hessian (background held fixed)
 # bootstrap = 0                     # parametric bootstrap replicates (one full fit each)
 # bootstrap_seed = 0

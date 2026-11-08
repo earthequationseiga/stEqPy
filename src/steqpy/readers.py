@@ -38,7 +38,7 @@ def jitter_rows(rows, jitter, seed, where="catalogue"):
     """Add U(-h, h) noise to the lon, lat, mag, t columns, then re-sort by time. Used to break
     ties from rounded values (e.g. magnitudes in 0.1 steps, locations to 0.01 deg): rounding
     puts events at identical times or places, which an ETAS fit reads as extreme clustering
-    (on KMA, 690 of 2406 events shared a location and the spatial scale D collapsed to 0).
+    (on one test catalogue, 29% of events shared a location and the spatial scale D collapsed to 0).
     h = jitter[name]: a number (same half-width for every value; 0 = untouched), or
     "precision" for lon, lat, mag: half the last decimal of each value (decimals()), as R's
     ETAS::catalog does by default for lon/lat. Caveat of that rule: a value that happens to end
@@ -70,8 +70,14 @@ def read_catalog(cat_path, xmg0, zmin, tz, jitter=None, seed=0):
     jitter: optional {lon, lat, mag, t: half-width} (see jitter_rows), applied to every row
     before the cuts, so events can move across the magnitude and time limits."""
     rows = np.loadtxt(cat_path, skiprows=1, usecols=(1, 2, 3, 4), ndmin=2)
+    return select_rows(rows, xmg0, zmin, tz, jitter, seed, str(cat_path))
+
+
+def select_rows(rows, xmg0, zmin, tz, jitter=None, seed=0, where="catalogue"):
+    """read_catalog's jitter and cuts on rows already loaded: (n, 4) lon, lat, mag, t, sorted
+    by t (e.g. EventCatalog.rows())."""
     if jitter and any(jitter.values()):
-        rows = jitter_rows(rows, jitter, seed, str(cat_path))
+        rows = jitter_rows(rows, jitter, seed, where)
     mag_cut = xmg0 - float(np.float32(0.000001))
     keep = []
     last_t = None
@@ -85,7 +91,7 @@ def read_catalog(cat_path, xmg0, zmin, tz, jitter=None, seed=0):
             last_t = t
         # (Fortran compares against the last *kept* event too: rejected rows are overwritten)
     if not keep:
-        raise ValueError(f"{cat_path}: no events with mag >= {xmg0} in ({zmin}, {zmin + tz}]")
+        raise ValueError(f"{where}: no events with mag >= {xmg0} in ({zmin}, {zmin + tz}]")
     return tuple(np.array(c) for c in zip(*keep))
 
 

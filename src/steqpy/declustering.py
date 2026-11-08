@@ -2,8 +2,11 @@
 as implemented in Zhuang's etas8p (space-time ETAS with a variable-bandwidth kernel
 background; the model details follow that code).
 
-    from steqpy import StochasticDeclustering
+    from steqpy import EventCatalog, StochasticDeclustering
     sd = StochasticDeclustering.from_config("configs/jma.toml", threads=8)
+    # or from data in memory (see events.EventCatalog):
+    # events = EventCatalog.from_csv("cat.csv")
+    # sd = StochasticDeclustering.from_catalog(events, polygon, "2000-01-01", "2024-12-31", 5.2)
     result = sd.fit()
     result.params                 # ETASParams (MLE)
     result.background_prob        # P(event i is a background event), per event
@@ -34,8 +37,9 @@ from . import bootstrap
 from .bfgs import bfgs
 from .catalog import Catalog, Region
 from .davidn import davidn
+from .events import EventCatalog
 from .params import ETASParams, Settings
-from .readers import read_catalog
+from .readers import read_catalog, select_rows
 from .result import DeclusteringResult
 
 
@@ -50,6 +54,15 @@ GRADIENT_TOL = 1.0
 PLAUSIBLE = {"c": (1e-6, 10.0), "alpha": (0.0, 5.0), "p": (0.0, 3.0), "q": (0.0, 10.0),
              "gamma": (0.0, 5.0)}
 NAMES = ("mu", "A", "c", "alpha", "p", "D", "q", "gamma")
+# Below this expected share of background among the targets, warn: nearly everything is read as
+# triggered (the incomplete KMA and Indonesia windows gave 0-5%; valid fits here gave 11-46%).
+BG_SHARE_MIN = 0.1
+EXPERIMENTAL = ("experimental, not for publication yet: {} (see status.md). The point estimates "
+                "and probabilities are unaffected.")
+# Start values when none are given (from_catalog): the JMA fit (configs/jma.toml). The fit
+# starts from these and moves to the MLE; they only need p, q > 1 and the right scale.
+DEFAULT_START = {"mu": 0.59284459, "A": 0.204288231, "c": 0.022692883, "alpha": 1.495169224,
+                 "p": 1.109752319, "D": "0.001175925 deg2", "q": 1.86004421, "gamma": 1.041549634}
 
 
 class StochasticDeclustering:
@@ -111,8 +124,13 @@ class StochasticDeclustering:
         # (_t_span: a control file's interval length, kept exact for bit-reproduction)
         t_span = inp.get("_t_span", inp["t_end"] - inp["t_min"])
         jitter = {k: inp.get(f"jitter_{k}", 0.0) for k in ("lon", "lat", "mag", "t")}
-        lon, lat, mag, t = read_catalog(inp["catalog"], inp["mag_min"], inp["t_min"], t_span,
-                                        jitter, int(inp.get("jitter_seed", 0)))
+        seed = int(inp.get("jitter_seed", 0))
+        if isinstance(inp["catalog"], EventCatalog):     # in memory (from_catalog)
+            lon, lat, mag, t = select_rows(inp["catalog"].rows(), inp["mag_min"], inp["t_min"],
+                                           t_span, jitter, seed, "EventCatalog")
+        else:
+            lon, lat, mag, t = read_catalog(inp["catalog"], inp["mag_min"], inp["t_min"], t_span,
+                                            jitter, seed)
         x, y = proj(lon, lat)
         px, py = proj(plon, plat)
         cat = Catalog(x, y, t - inp["t_min"], mag - inp["mag_min"])
@@ -125,6 +143,29 @@ class StochasticDeclustering:
         cfg["settings"] = dataclasses.asdict(s)
         sd.config = cfg
         return sd
+
+    @classmethod
+    def from_catalog(cls, events, polygon, t_start, t_end, mag_min, params=None, t_min=None,
+                     jitter=None, seed=0, grid=None, log=None, **overrides):
+        """Build from an EventCatalog in memory. polygon: [[lon, lat], ...] or a polygon file;
+        t_start, t_end: the target window (dates, or days since events.t0); mag_min: the
+        magnitude cutoff (see events.completeness); params: start values {mu, A, ..., D: "...
+        deg2"} (default DEFAULT_START); t_min: earliest time read (default one day before the
+        first event: every event can trigger); jitter: {lon, lat, mag, t: half-width or
+        "precision"} (see readers.jitter_rows); seed: for every random step (jitter, bootstrap;
+        Settings.bootstrap_seed in overrides wins for the bootstrap); grid: rate-map grid {lon, lat, n};
+        overrides: Settings fields or preset=. Same checks and defaults as from_config."""
+        inp = {"catalog": events,
+               "polygon": polygon if isinstance(polygon, str) else [[float(a), float(b)] for a, b in polygon],
+               "t_min": float(events.t.min()) - 1.0 if t_min is None else events.days(t_min),
+               "t_start": events.days(t_start), "t_end": events.days(t_end), "mag_min": float(mag_min)}
+        if jitter:
+            inp.update({f"jitter_{k}": v for k, v in jitter.items()}, jitter_seed=int(seed))
+        overrides.setdefault("bootstrap_seed", int(seed))
+        source = {"input": inp, "params": dict(DEFAULT_START if params is None else params)}
+        if grid:
+            source["grid"] = grid
+        return cls.from_config(source, log, **overrides)
 
     @classmethod
     def from_input_file(cls, path, log=None, **overrides):
@@ -268,6 +309,8 @@ class StochasticDeclustering:
         Reference: Wang, Q., Schoenberg, F. P. & Jackson, D. D. (2010). Standard errors of
         parameter estimates in the ETAS model. BSSA 100(5A), 1989-2001, doi:10.1785/0120100001
         (limits of Hessian errors for ETAS; prefer Settings.bootstrap where the cost allows)."""
+        warnings.warn(EXPERIMENTAL.format("Hessian standard errors hold the background fixed, so "
+                                          "they are too small"))
         th = self._theta()
         b = np.sqrt(th)
         H = np.empty((8, 8))
@@ -345,7 +388,25 @@ class StochasticDeclustering:
                 lo, hi = PLAUSIBLE[name]
                 if not lo < vals[i] < hi:
                     notes.append(f"{name} = {vals[i]:.4g} is outside the usual range ({lo:g}, {hi:g})")
+        # Signs the fit does not describe the data (the website refuses p or q <= 1). Usually the
+        # catalogue is incomplete for part of the window, which reads as clustering.
+        if s.form == "K" and not (th[4] > 1 and th[6] > 1):
+            notes.append(f"p = {th[4]:.4g}, q = {th[6]:.4g}: one is <= 1, so A is undefined and "
+                         "aftershock sequences have no finite expected size; usually the catalogue is "
+                         "incomplete for part of the window (start later or raise mag_min)")
+        share = float(np.mean(th[0] * self.background_rate[t] / lam)) if lam.size else float("nan")
+        self.checks["background_share"] = share
+        if share < BG_SHARE_MIN:
+            notes.append(f"only {100 * share:.1f}% of the targets are background (expected count): "
+                         "nearly everything is read as triggered; usually incompleteness, or a window "
+                         "dominated by one sequence")
+        n_outer = sum(1 for h in self.history if h[0] == "outer")
+        if s.converge and self.converged and n_outer == s.max_outer:
+            notes.append(f"converged only at the last allowed outer iteration ({s.max_outer}): "
+                         "rerun with a larger max_outer to confirm")
         self.checks["warnings"] = notes
+        # usable = what the website shows: passed the checks and p, q > 1
+        self.checks["usable"] = not failed and bool(th[4] > 1 and th[6] > 1)
         if notes:
             warnings.warn("fit is valid but questionable: " + "; ".join(notes))
         if failed:

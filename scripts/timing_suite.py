@@ -7,8 +7,9 @@ Before each case: CPU load (above 15% is flagged) and a fixed speed probe. This 
 running 3-6x slow with the CPU load reading 2%, so load alone does not catch it; a probe more than
 1.5x the run's fastest probe flags that case's timing as suspect.
 Cases: the defaults (BFGS, K form), the old default (davidn, A form) for comparison, flat
-projection, preset "original" (bit-exact Fortran path), thread scaling, KMA (configs/kma.toml,
-a second, smaller catalogue: default and preset "original"), then the Fortran (JMA only).
+projection, preset "original" (bit-exact Fortran path), thread scaling, then the Fortran (JMA only).
+Cases on other catalogues (LOCAL_CASES) run only where their config exists: their data is not in
+the repo.
 
 Run from anywhere, about 2 h in total (of which the Fortran about 66 min):
     python -I scripts/timing_suite.py [--dry-run] [--only NAME ...] [--no-fortran]
@@ -28,7 +29,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/jma.toml"
-KMA = ROOT / "configs/kma.toml"
 FORTRAN = ROOT / "build/fortran_mpi/etas8p.exe"
 BOOT = "import sys; sys.path.insert(0, 'src'); from steqpy.__main__ import main; main()"
 BUSY_LOAD = 15
@@ -44,9 +44,13 @@ PYTHON_CASES = [("warmup", 10, []), ("warmup_old", 10, OLD_DEFAULT),
                 ("default_flat", 10, ["--set", 'projection="flat"']),
                 ("original_t10", 10, ["--preset", "original"]),
                 ("default_t1", 1, []), ("default_t2", 2, []), ("default_t4", 4, []),
-                ("default_t8", 8, []),
-                # a second, smaller catalogue (KMA 2012+, M >= 2.0: 2406 events, 988 targets)
-                ("kma_default", 10, [], KMA), ("kma_original", 10, ["--preset", "original"], KMA)]
+                ("default_t8", 8, [])]
+# Other catalogues, local only (configs gitignored, data not shareable): name -> config.
+LOCAL_CASES = {"kma": "configs/kma.toml", "kma15": "configs/kma_m15.toml"}
+for _name, _cfg in LOCAL_CASES.items():
+    if (ROOT / _cfg).exists():
+        PYTHON_CASES += [(f"{_name}_default", 10, [], ROOT / _cfg),
+                         (f"{_name}_original", 10, ["--preset", "original"], ROOT / _cfg)]
 FORTRAN_CASE = "fortran_np10"
 
 
@@ -170,8 +174,7 @@ def main():
     if unknown:
         ap.error(f"unknown cases {unknown}; choose from {names}")
     with_fortran = FORTRAN_CASE in wanted and not a.no_fortran
-    missing = [str(p) for p in (CONFIG, KMA, ROOT / "data/jma/jap.in", ROOT / "data/korea_kma/kma_m1.5.etas")
-               if not p.exists()]
+    missing = [str(p) for p in (CONFIG, ROOT / "data/jma/jap.in") if not p.exists()]
     if with_fortran:
         missing += [] if FORTRAN.exists() else [str(FORTRAN) + " (bash scripts/build_fortran.sh)"]
         missing += [] if shutil.which("mpiexec") else ["mpiexec"]

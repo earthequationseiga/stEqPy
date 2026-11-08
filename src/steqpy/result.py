@@ -99,14 +99,15 @@ class DeclusteringResult:
         bk = terms(i, self._x(), self.background_rate, c.x, c.y, c.t, c.m, rates)
         return rates / (bk + rates.sum())
 
-    def sample_background(self, seed=None):
+    def sample_background(self, seed=0):
         """One random declustered catalogue: a boolean mask over all events, True = background
         (Algorithm 2 of Zhuang et al. 2002). Includes non-targets: combine with
-        `ind == 1` to keep only the target events."""
+        `ind == 1` to keep only the target events. seed: fixed by default so reruns give the same
+        catalogue; other seeds give other, equally valid draws."""
         phi = self.final_background_prob
         return np.random.default_rng(seed).random(len(phi)) < phi
 
-    def sample_parents(self, seed=None):
+    def sample_parents(self, seed=0):
         """One random family tree: each event's parent index, -1 = background (Algorithm 3 of
         Zhuang et al. 2004). The same seed gives the same tree at any thread count."""
         c = self.catalog
@@ -181,6 +182,7 @@ class DeclusteringResult:
         else:                                       # built without a projection: model x, y
             coords, ex, ey, px, py = "model", c.x, c.y, r.polygon_x, r.polygon_y
         inp = (self.config or {}).get("input", {})
+        t0 = getattr(inp.get("catalog"), "t0", None)       # EventCatalog with real times
         params = dataclasses.asdict(self.params)
         if self.K is not None and np.isnan(self.params.A):
             params["K"] = self.K                    # A undefined for p or q <= 1
@@ -192,13 +194,15 @@ class DeclusteringResult:
                     "warnings": checks.get("warnings", []), "converged": self.converged,
                     "neg_loglik": self.neg_loglik, "aic": 2 * (self.neg_loglik + 8),
                     "likelihood_calls": self.n_likelihood_calls,
-                    "n_events": len(c), "n_targets": int(np.sum(self.ind == 1))},
+                    "n_events": len(c), "n_targets": int(np.sum(self.ind == 1)),
+                    "usable": checks.get("usable"), "background_share": checks.get("background_share")},
             "params": params,
             "units": {"c": "days", "D": f"deg^2 of arc (1 deg = {DEG_KM} km)",
-                      "t_days": "days since t_min",
+                      "t_days": "days since t_min (t_min itself in days since t0, when t0 is given)",
                       "bandwidth": "deg of arc (model coordinates)",
                       "coords": "lon/lat in degrees" if coords == "lonlat" else "model x, y"},
             "errors": {
+                "status": "experimental: not validated, do not publish yet",
                 "hessian": self.hessian_errors,
                 "hessian_note": "background held fixed, so too small; "
                                 "Wang, Schoenberg & Jackson (2010), BSSA 100(5A), 1989-2001",
@@ -210,11 +214,13 @@ class DeclusteringResult:
                        "x" if coords == "model" else "lon": _sig(ex, 8),
                        "y" if coords == "model" else "lat": _sig(ey, 8),
                        "t_days": _sig(c.t, 10), "t_min": inp.get("t_min"),
+                       "t0": None if t0 is None else str(t0),
                        "mag_above_cutoff": _sig(c.m, 4), "mag_cutoff": inp.get("mag_min"),
                        "target": (self.ind == 1).astype(int),
                        "p_background": _sig(phi, 8),
                        "bandwidth": _sig(self.bandwidth, 8)},
             "region": {"polygon": np.column_stack([px, py]), "t_start": r.t_start, "t_end": r.t_end},
+            "seeds": {"jitter": inp.get("jitter_seed", 0), "bootstrap": self.settings.bootstrap_seed},
             "projection": None if self.projection is None else
             {"kind": self.projection.kind, "lon0": self.projection.lon0, "lat0": self.projection.lat0,
              "note": "laea: Lambert azimuthal equal-area at (lon0, lat0), radius 180/pi deg; "
@@ -223,6 +229,35 @@ class DeclusteringResult:
                            "units": "mu * u in events per day per deg^2 of arc"},
         }
         return _clean(d)
+
+    # -- figures (see plotting; needs matplotlib) -------------------------------------------
+    def plot_events(self, kind="all", ax=None, show_outside=True):
+        """Map of the events by class: "all", "background", "uncertain" or "aftershock"."""
+        from . import plotting
+        return plotting.events(self, kind, ax, show_outside)
+
+    def plot_background_rate(self, ax=None, n=250):
+        """Map of the background rate (events per year per 10,000 km^2, log scale)."""
+        from . import plotting
+        return plotting.background_rate(self, ax, n)
+
+    def plot_histogram(self, ax=None):
+        """Histogram of P(aftershock) over the target events, coloured by class."""
+        from . import plotting
+        return plotting.histogram(self, ax)
+
+    def plot_summary(self):
+        """One figure: events by class, background rate, histogram, parameters."""
+        from . import plotting
+        return plotting.summary(self)
+
+    def run_bootstrap(self, n, seed=0, log=None):
+        """Parametric bootstrap of this fit (see bootstrap): n catalogues simulated from it, each
+        refitted. Costs n fits. Returns a dict: params (n, 8; NaN rows failed), se and ci (95%
+        percentile intervals) per parameter, n_good, and the background rate at each event, u,
+        with its spread u_se. (Settings.bootstrap = n does the same inside fit().)"""
+        from . import bootstrap
+        return bootstrap.run(self, n, seed, log or (lambda msg: None))
 
     def write_outputs(self, out):
         """probs.dat, rates.dat (original formats), params.txt, result.json (see to_dict),
@@ -249,12 +284,13 @@ class DeclusteringResult:
             # A = K / ((p-1)(q-1)) does not exist for p or q <= 1: report the amplitude as K
             lines.append(f"K      = {self.K:.10g}  # A undefined (p or q <= 1); K = A (p-1)(q-1)")
         if self.hessian_errors:
-            lines += ["", "# standard errors from the Hessian (background held fixed: too small)",
+            lines += ["", "# EXPERIMENTAL, do not publish yet: standard errors from the Hessian "
+                          "(background held fixed: too small)",
                       "# Wang, Schoenberg & Jackson (2010), BSSA 100(5A), 1989-2001"]
             lines += [f"se({k}){' ' * (6 - len(k))}= {v:.4g}" for k, v in self.hessian_errors.items()]
         if self.bootstrap and self.bootstrap["se"]:
             b = self.bootstrap
-            lines += ["", f"# parametric bootstrap standard errors ({b['n_good']} of "
+            lines += ["", f"# EXPERIMENTAL, do not publish yet: parametric bootstrap standard errors ({b['n_good']} of "
                           f"{len(b['params'])} replicates), 95% percentile intervals",
                       "# Dutilleul, Genest & Peng (2024), GJI 236, 1601-1608 (ETASbootstrap)"]
             lines += [f"se({k}){' ' * (6 - len(k))}= {v:.4g}   95% ({b['ci'][k][0]:.4g}, {b['ci'][k][1]:.4g})"
@@ -276,6 +312,9 @@ class DeclusteringResult:
                            header="event u u_se  (background rate at each event; se over replicates)")
         if self.config:
             c = self.config
-            text = config.dump(c["settings"], c["input"], c["params"], c["grid"],
-                               c["preset"], out)
+            inp = dict(c["input"])
+            if not isinstance(inp["catalog"], str):      # in memory (from_catalog): save it
+                inp["catalog"].to_etas(out / "catalogue.etas")
+                inp["catalog"] = str(out / "catalogue.etas")
+            text = config.dump(c["settings"], inp, c["params"], c["grid"], c["preset"], out)
             (out / "config.toml").write_bytes(text.encode("utf-8"))

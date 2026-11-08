@@ -67,6 +67,7 @@ class Settings:
     # [run]
     threads: int = 0                # 0 = serial loops; >0 = Numba threads (bit-identical)
     # Optional uncertainty estimates (see StochasticDeclustering.standard_errors, bootstrap.py).
+    # EXPERIMENTAL: not validated yet (they warn when used); do not publish their numbers.
     hessian_errors: bool = False    # standard errors from the Hessian, as analysed by Wang,
                                     # Schoenberg & Jackson (2010) (background held fixed: too small)
     bootstrap: int = 0              # parametric bootstrap replicates, Dutilleul, Genest & Peng
