@@ -22,11 +22,37 @@ class ListReader:
         return vals[:k]
 
 
-def read_catalog(cat_path, xmg0, zmin, tz):
+JITTER_COLS = ("lon", "lat", "mag", "t")       # column order of the rows read_catalog loads
+
+
+def jitter_rows(rows, jitter, seed, where="catalogue"):
+    """Add U(-h, h) noise to the lon, lat, mag, t columns (h = jitter[name], 0 = untouched),
+    then re-sort by time. Used to break ties from rounded values (e.g. magnitudes in 0.1
+    steps, locations to 0.01 deg): rounding puts events at identical times or places, which
+    an ETAS fit reads as extreme clustering. R's ETAS::catalog does this by default for
+    lon/lat with h = half the last printed decimal; here it is opt-in with explicit widths.
+    Noise is drawn for all four columns whatever the widths, so changing one width leaves
+    the other columns' noise unchanged for the same seed."""
+    h = np.array([float(jitter.get(k, 0.0)) for k in JITTER_COLS])
+    if not np.all(np.isfinite(h)) or np.any(h < 0):
+        raise ValueError(f"jitter half-widths must be finite and >= 0, got {dict(zip(JITTER_COLS, h))}")
+    bad = np.flatnonzero(np.diff(rows[:, 3]) < 0)
+    if bad.size:                                # same check the reader makes, before re-sorting
+        raise ValueError(f"{where}: Reverse data: {rows[bad[0], 3]} {rows[bad[0] + 1, 3]}")
+    rng = np.random.default_rng(seed)
+    rows = rows + rng.uniform(-1.0, 1.0, rows.shape) * h
+    return rows[np.argsort(rows[:, 3], kind="stable")]
+
+
+def read_catalog(cat_path, xmg0, zmin, tz, jitter=None, seed=0):
     """Original catalogue format: header line, then id lon lat mag t ... (t in days, sorted).
     Same filters/stop rule as the Fortran: keep mag > xmg0 (minus a float32 epsilon) and
-    zmin < t <= zmin + tz. Returns raw lon, lat, mag, t arrays."""
+    zmin < t <= zmin + tz. Returns raw lon, lat, mag, t arrays.
+    jitter: optional {lon, lat, mag, t: half-width} (see jitter_rows), applied to every row
+    before the cuts, so events can move across the magnitude and time limits."""
     rows = np.loadtxt(cat_path, skiprows=1, usecols=(1, 2, 3, 4), ndmin=2)
+    if jitter and any(jitter.values()):
+        rows = jitter_rows(rows, jitter, seed, str(cat_path))
     mag_cut = xmg0 - float(np.float32(0.000001))
     keep = []
     last_t = None

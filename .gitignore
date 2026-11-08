@@ -26,3 +26,7 @@ PROMPTS.md
 architecture.md
 status.md
 docs/
+
+# Speed figures: kept out of the repo for now (user decision, 2026-11-08)
+figures/
+scripts/figures_speed.py

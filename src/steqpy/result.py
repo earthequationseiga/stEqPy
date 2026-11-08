@@ -33,6 +33,8 @@ class DeclusteringResult:
     config: dict = None             # resolved config, when built by from_config
     checks: dict = None             # StochasticDeclustering.check_fit; "failed" lists problems
     K: float = None                 # K form: K = A (p-1)(q-1); A is NaN if p or q <= 1
+    hessian_errors: dict = None     # {name: se} if Settings.hessian_errors
+    bootstrap: dict = None          # bootstrap.run's output if Settings.bootstrap
 
     # -- declustering outputs ------------------------------------------------------------
     def _x(self):
@@ -140,14 +142,34 @@ class DeclusteringResult:
         if self.K is not None and np.isnan(p.A):
             # A = K / ((p-1)(q-1)) does not exist for p or q <= 1: report the amplitude as K
             lines.append(f"K      = {self.K:.10g}  # A undefined (p or q <= 1); K = A (p-1)(q-1)")
+        if self.hessian_errors:
+            lines += ["", "# standard errors from the Hessian (background held fixed: too small)",
+                      "# Wang, Schoenberg & Jackson (2010), BSSA 100(5A), 1989-2001"]
+            lines += [f"se({k}){' ' * (6 - len(k))}= {v:.4g}" for k, v in self.hessian_errors.items()]
+        if self.bootstrap and self.bootstrap["se"]:
+            b = self.bootstrap
+            lines += ["", f"# parametric bootstrap standard errors ({b['n_good']} of "
+                          f"{len(b['params'])} replicates), 95% percentile intervals",
+                      "# Dutilleul, Genest & Peng (2024), GJI 236, 1601-1608 (ETASbootstrap)"]
+            lines += [f"se({k}){' ' * (6 - len(k))}= {v:.4g}   95% ({b['ci'][k][0]:.4g}, {b['ci'][k][1]:.4g})"
+                      for k, v in b["se"].items()]
         lines += ["", f"-log L = {self.neg_loglik:.10f}",
                   f"AIC    = {2 * (self.neg_loglik + 8):.4f}",
                   f"converged = {self.converged}", f"likelihood calls = "
                   f"{self.n_likelihood_calls}", f"ndiv check = {self.ndiv_error}",
                   f"targets = {int(np.sum(self.ind == 1))} of {len(self.catalog)}"]
         (out / "params.txt").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+        if self.bootstrap:
+            b = self.bootstrap
+            np.savetxt(out / "bootstrap_params.dat", b["params"], fmt="%.10g",
+                       header="mu A c alpha p D q gamma  (one replicate per row; NaN = failed)")
+            if b["u_se"] is not None:
+                np.savetxt(out / "bootstrap_background.dat",
+                           np.column_stack([np.arange(1, len(b["u"]) + 1), b["u"], b["u_se"]]),
+                           fmt=["%d", "%.10g", "%.10g"],
+                           header="event u u_se  (background rate at each event; se over replicates)")
         if self.config:
             c = self.config
             text = config.dump(c["settings"], c["input"], c["params"], c["grid"],
-                               c["preset"])
+                               c["preset"], out)
             (out / "config.toml").write_bytes(text.encode("utf-8"))

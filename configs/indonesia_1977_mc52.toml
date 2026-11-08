@@ -1,0 +1,29 @@
+# Indonesian extra example (not run yet): ISC Bulletin, reported Mw only, depth <= 50 km,
+# 1977-2024 at Mc 5.2 (pre-2000 incomplete at 5.2: expect bias; for comparison). Catalogue and Mc analysis: data/indonesia/README.txt, scripts/completeness.py.
+# Polygon: the query box 18.10S-4.61N, 93.08-138.47E shrunk by 300 km (2.70 deg; the box is
+# the Z-value study area + 300 km, doi:10.1007/s11069-019-03689-y); events in the margin and
+# in the first year only trigger. Initial parameters: JMA's. Other settings: defaults.
+# Run: python -m steqpy configs/indonesia_1977_mc52.toml --out results/indonesia_1977_mc52 --threads 10
+
+[input]
+catalog = "../data/indonesia/isc_mw4_1963-2024.etas"   # t = days since 1963-01-01
+polygon = "indonesia_polygon.txt"
+t_min = 5113.0
+t_start = 5479.0
+t_end = 22646.0                     # 2025-01-01
+mag_min = 5.2
+
+[params]
+mu = 0.592844590
+A = 0.204288231
+c = 0.022692883
+alpha = 1.495169224
+p = 1.109752319
+D = "0.001175925 deg2"
+q = 1.860044210
+gamma = 1.041549634
+
+[grid]
+lon = [93.08, 138.47]
+lat = [-18.10, 4.61]
+n = [455, 228]

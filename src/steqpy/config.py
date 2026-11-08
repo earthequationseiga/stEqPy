@@ -4,7 +4,8 @@ A TOML file (see configs/jma.toml) has these tables; every key is optional excep
 what is needed to find the data:
 
     preset = "default"            # or "original" (bit-exact reproduction of the Fortran)
-    [input]   control | catalog, polygon, t_min, t_start, t_end, mag_min
+    [input]   control | catalog, polygon, t_min, t_start, t_end, mag_min;
+              optional jitter_lon, jitter_lat (deg), jitter_mag, jitter_t (days), jitter_seed
     [params]  initial ETAS parameters mu, A, c, alpha, p, D, q, gamma
     [grid]    lon = [min, max], lat = [min, max], n = [nlon, nlat]   (rate map)
     [model] [convergence] [run] [advanced]    algorithm settings (Settings fields)
@@ -13,6 +14,7 @@ what is needed to find the data:
 input/params/grid and npp/bwm/optimise, and anything else in the TOML overrides it.
 Relative paths are relative to the TOML file. Unknown keys are errors (catches typos).
 """
+import os
 from pathlib import Path
 
 try:
@@ -27,13 +29,14 @@ SECTIONS = {
     "model": ("projection", "npp", "bwm", "optimise"),
     "convergence": ("converge", "schedule", "outer_metric", "outer_tol", "max_outer",
                     "inner_metric", "inner_tol", "max_inner"),
-    "run": ("threads",),
+    "run": ("threads", "hessian_errors", "bootstrap", "bootstrap_seed"),
     "advanced": ("quadrature", "optimiser", "form", "sgl_nodes", "sgl_nodes_background", "xlamb", "ndiv", "ndiv_check",
                  "ndiv_check_tol", "fast_xint", "tol", "max_sweeps", "ls_step", "ls_shrink",
                  "ls_expand", "frint_eps", "frint_eps_r", "log_floor", "log_penalty",
                  "chunksize"),
 }
-INPUT_KEYS = ("control", "catalog", "polygon", "t_min", "t_start", "t_end", "mag_min")
+INPUT_KEYS = ("control", "catalog", "polygon", "t_min", "t_start", "t_end", "mag_min",
+              "jitter_lon", "jitter_lat", "jitter_mag", "jitter_t", "jitter_seed")
 PARAM_KEYS = ("mu", "A", "c", "alpha", "p", "D", "q", "gamma")
 GRID_KEYS = ("lon", "lat", "n")
 
@@ -128,11 +131,26 @@ def _toml_value(v):
     raise TypeError(f"cannot write {type(v).__name__} to TOML")
 
 
-def dump(settings, inp, params, grid, preset):
-    """Fully resolved configuration as TOML text (re-loadable: reproduces the run)."""
+def _path_from(v, base):
+    """Input path v (relative to the working directory, as load leaves it) rewritten relative
+    to base, the folder the TOML goes in, since load reads paths relative to the TOML file.
+    Absolute when base is None or there is no relative path (another drive)."""
+    p = Path(v).resolve()
+    if base is None:
+        return p.as_posix()
+    try:
+        return Path(os.path.relpath(p, Path(base).resolve())).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def dump(settings, inp, params, grid, preset, base=None):
+    """Fully resolved configuration as TOML text (re-loadable: reproduces the run).
+    base: the folder the text will be saved in, so that file paths resolve from there (and
+    the folders can move together); None: absolute paths."""
     lines = [f"preset = {_toml_value(preset)}", "", "[input]"]
-    lines += [f"{k} = {_toml_value(v)}" for k, v in inp.items()
-              if k not in ("control", "_t_span")]
+    lines += [f"{k} = {_toml_value(_path_from(v, base) if k in ('catalog', 'polygon') and isinstance(v, str) else v)}"
+              for k, v in inp.items() if k not in ("control", "_t_span")]
     lines += ["", "[params]"] + [f"{k} = {_toml_value(params[k])}" for k in PARAM_KEYS]
     if grid:
         lines += ["", "[grid]"] + [f"{k} = {_toml_value(grid[k])}" for k in GRID_KEYS]

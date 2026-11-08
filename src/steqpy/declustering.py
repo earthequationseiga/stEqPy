@@ -30,6 +30,7 @@ import numpy as np
 
 from . import config, geo
 from . import kernels as K
+from . import bootstrap
 from .bfgs import bfgs
 from .catalog import Catalog, Region
 from .davidn import davidn
@@ -42,6 +43,13 @@ from .result import DeclusteringResult
 # and the valid JMA fits have |g| of 5e-3 or less, so these only catch fits that are far off.
 INTEGRAL_TOL = 0.01
 GRADIENT_TOL = 1.0
+# Plausibility (warnings only, the fit still counts): an optimum can be real and still say the
+# kernel shape does not suit the data, e.g. q -> infinity is the Gaussian limit of the spatial
+# kernel. Bounds are generous: published ETAS fits sit well inside them. c in days, alpha and
+# gamma per magnitude unit.
+PLAUSIBLE = {"c": (1e-6, 10.0), "alpha": (0.0, 5.0), "p": (0.0, 3.0), "q": (0.0, 10.0),
+             "gamma": (0.0, 5.0)}
+NAMES = ("mu", "A", "c", "alpha", "p", "D", "q", "gamma")
 
 
 class StochasticDeclustering:
@@ -84,6 +92,8 @@ class StochasticDeclustering:
         self.ndiv_error = None
         self.checks = None
         self.K = None                           # K form: K, kept for when A is undefined
+        self.hessian_errors = None              # {name: se}, Settings.hessian_errors
+        self.bootstrap = None                   # bootstrap.run's dict, Settings.bootstrap
         self.bfgs_H = None                      # BFGS inverse Hessian, kept between outers
 
     @classmethod
@@ -100,7 +110,9 @@ class StochasticDeclustering:
         proj = geo.Projection(s.projection, plon, plat)
         # (_t_span: a control file's interval length, kept exact for bit-reproduction)
         t_span = inp.get("_t_span", inp["t_end"] - inp["t_min"])
-        lon, lat, mag, t = read_catalog(inp["catalog"], inp["mag_min"], inp["t_min"], t_span)
+        jitter = {k: inp.get(f"jitter_{k}", 0.0) for k in ("lon", "lat", "mag", "t")}
+        lon, lat, mag, t = read_catalog(inp["catalog"], inp["mag_min"], inp["t_min"], t_span,
+                                        jitter, int(inp.get("jitter_seed", 0)))
         x, y = proj(lon, lat)
         px, py = proj(plon, plat)
         cat = Catalog(x, y, t - inp["t_min"], mag - inp["mag_min"])
@@ -245,6 +257,46 @@ class StochasticDeclustering:
             warnings.warn(f"{name}={size} changes -log L by {self.ndiv_error:.1e} when "
                           f"doubled (> {s.ndiv_check_tol}): consider a larger {name}")
 
+    def standard_errors(self, rel_step=1e-4):
+        """Approximate standard errors of the reported parameters: inverse of the observed
+        information (Hessian of -log L, central differences of the analytic gradient in
+        sqrt(theta)), mapped to the parameters by the delta method. Conditional on the
+        background, which the likelihood holds fixed (a kernel smoother of phi, not a fitted
+        parameter), so somewhat too small; the bootstrap includes it. In the K form
+        A = K/((p-1)(q-1)) gets its error through K, p and q; K's is given when A is undefined.
+        NaN if the Hessian is not positive definite (not a clear minimum).
+        Reference: Wang, Q., Schoenberg, F. P. & Jackson, D. D. (2010). Standard errors of
+        parameter estimates in the ETAS model. BSSA 100(5A), 1989-2001, doi:10.1785/0120100001
+        (limits of Hessian errors for ETAS; prefer Settings.bootstrap where the cost allows)."""
+        th = self._theta()
+        b = np.sqrt(th)
+        H = np.empty((8, 8))
+        for k in range(8):
+            e = rel_step * b[k]
+            bp, bm = b.copy(), b.copy()
+            bp[k] += e
+            bm[k] -= e
+            H[:, k] = (np.array(self._func15(bp, self.xint0)[1])
+                       - np.array(self._func15(bm, self.xint0)[1])) / (2 * e)
+        H = 0.5 * (H + H.T)
+        names = list(NAMES)
+        J = np.diag(2.0 * b)                    # d theta_k / d b_k
+        if self.settings.form == "K":
+            p, q = th[4], th[6]
+            if p > 1 and q > 1:                 # A = b1^2 / ((b4^2 - 1)(b6^2 - 1))
+                a = th[1] / ((p - 1) * (q - 1))
+                J[1, 1] = 2.0 * b[1] / ((p - 1) * (q - 1))
+                J[1, 4] = -a * 2.0 * b[4] / (p - 1)
+                J[1, 6] = -a * 2.0 * b[6] / (q - 1)
+            else:
+                names[1] = "K"
+        with np.errstate(all="ignore"):
+            if np.all(np.isfinite(H)) and np.linalg.eigvalsh(H).min() > 0:
+                se = np.sqrt(np.diag(J @ np.linalg.inv(H) @ J.T))
+            else:
+                se = np.full(8, np.nan)
+        return dict(zip(names, (float(v) for v in se)))
+
     def check_fit(self):
         """Is the fit a usable model? -log L settling (the outer test) does not show this: outside
         p, q > 1 it has no lower limit, so an invalid fit can settle or keep "improving". Fills
@@ -285,6 +337,17 @@ class StochasticDeclustering:
             if not gnorm <= GRADIENT_TOL:
                 failed.append(f"gradient norm = {gnorm:.4g}")
         self.checks["failed"] = failed
+        # Plausibility: warnings only. The fit is valid but may not describe the data well.
+        notes = []
+        vals = self.params.to_array()
+        for i, name in enumerate(NAMES):
+            if name in PLAUSIBLE:
+                lo, hi = PLAUSIBLE[name]
+                if not lo < vals[i] < hi:
+                    notes.append(f"{name} = {vals[i]:.4g} is outside the usual range ({lo:g}, {hi:g})")
+        self.checks["warnings"] = notes
+        if notes:
+            warnings.warn("fit is valid but questionable: " + "; ".join(notes))
         if failed:
             warnings.warn("fit failed its checks: " + "; ".join(failed))
             if s.converge:
@@ -346,7 +409,12 @@ class StochasticDeclustering:
             warnings.warn(f"not converged after max_outer={s.max_outer} iterations")
         if self.neg_loglik is None:
             self.neg_loglik = self._func15(np.sqrt(self._theta()), self.xint0)[0]
+        if s.hessian_errors and s.optimise:
+            self.hessian_errors = self.standard_errors()
         self.check_fit()
+        if s.bootstrap and s.optimise:
+            self.log(f" parametric bootstrap, {s.bootstrap} replicates")
+            self.bootstrap = bootstrap.run(self.result(), s.bootstrap, s.bootstrap_seed, self.log)
         return self.result()
 
     def result(self):
@@ -358,4 +426,5 @@ class StochasticDeclustering:
             self.background_prob.copy(), self.background_rate.copy(), self.bandwidth.copy(),
             self.neg_loglik, list(self.history), self.converged, self.n_likelihood_calls,
             self.ndiv_error, self.projection, self.grid, self.config, self.checks,
-            self._theta()[1] if self.settings.form == "K" else None)
+            self._theta()[1] if self.settings.form == "K" else None, self.hessian_errors,
+            self.bootstrap)

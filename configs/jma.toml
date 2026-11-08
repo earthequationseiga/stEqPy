@@ -9,6 +9,13 @@ t_min = 0.0                         # catalogue start (days): events at t <= t_m
 t_start = 10000.0                   # target window [t_start, t_end] (days); earlier events
 t_end = 23376.0                     #   and events outside the polygon only trigger
 mag_min = 4.5                       # magnitude cutoff
+# Optional jitter (off by default): uniform noise in [-h, +h] added to every row before the
+# cuts above, to break ties from rounded values. h per column; 0 = untouched.
+# jitter_lon = 0.0                  # deg
+# jitter_lat = 0.0                  # deg
+# jitter_mag = 0.0                  # magnitude units (e.g. 0.05 for 0.1 bins)
+# jitter_t = 0.0                    # days
+# jitter_seed = 0
 
 [params]                            # initial ETAS parameters
 mu = 0.592844590
@@ -44,6 +51,9 @@ max_inner = 11
 
 [run]
 threads = 0                         # 0 = serial; n = Numba threads (same results)
+# hessian_errors = false            # standard errors from the Hessian (background held fixed)
+# bootstrap = 0                     # parametric bootstrap replicates (one full fit each)
+# bootstrap_seed = 0
 
 [advanced]
 # quadrature = "sgl"                # polygon integrals: "sgl", or "ndiv" (equal-length pieces, original)

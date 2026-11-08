@@ -354,6 +354,19 @@ def test_check_fit():
     print(sd.checks)
     assert sd.checks["failed"] == [] and sd.converged
     assert abs(sd.checks["integral_over_n"] - 1) < 1e-3
+    # No plausibility warnings on JMA. Hessian errors (optional): finite, well below the values.
+    vals = dict(zip(("mu", "A", "c", "alpha", "p", "D", "q", "gamma"), sd.params.to_array()))
+    assert sd.checks["warnings"] == []
+    se = sd.standard_errors()
+    print(se)
+    assert all(0 < se[k] < 0.5 * vals[k] for k in vals), se
+    # A runaway q (as a Gaussian-offset catalogue gives) is valid but flagged.
+    sd.params = ETASParams(**{**vals, "q": 5e4})
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        sd.check_fit()
+    assert any(m.startswith("q = ") for m in sd.checks["warnings"]), sd.checks
+    sd.params = ETASParams(**vals)
 
     # p, q <= 1 is invalid only in the A form (the K form allows it).
     th = sd.params.to_array()

@@ -3,7 +3,11 @@
 Nothing else should use the CPU meanwhile. Results go to build/timing/<date-time>/, and summary.csv
 is rewritten after every case, so an interrupted run keeps what finished.
 Peak memory is a working-set poll every 5 s (all ranks summed for the Fortran), so it is approximate.
-CPU load is sampled before each case: above 15% is flagged, because that timing is suspect.
+Before each case: CPU load (above 15% is flagged) and a fixed speed probe. This PC has been seen
+running 3-6x slow with the CPU load reading 2%, so load alone does not catch it; a probe more than
+1.5x the run's fastest probe flags that case's timing as suspect.
+Cases: the defaults (BFGS, K form), the old default (davidn, A form) for comparison, flat
+projection, preset "original" (bit-exact Fortran path), thread scaling, then the Fortran.
 
 Run from anywhere, about 2 h in total (of which the Fortran about 66 min):
     python -I scripts/timing_suite.py [--dry-run] [--only NAME ...] [--no-fortran]
@@ -26,14 +30,16 @@ CONFIG = ROOT / "configs/jma.toml"
 FORTRAN = ROOT / "build/fortran_mpi/etas8p.exe"
 BOOT = "import sys; sys.path.insert(0, 'src'); from steqpy.__main__ import main; main()"
 BUSY_LOAD = 15
+SLOW_PROBE = 1.5
 FIELDS = ["case", "threads", "wall_s", "fit_s", "outputs_s", "calls", "neg_loglik", "converged",
-          "peak_mb", "load_before_pct", "exit"]
+          "peak_mb", "load_before_pct", "probe_s", "exit"]
 
 # name, threads, extra CLI arguments. Numba compiles on first use, so "warmup" is not a timing.
-PYTHON_CASES = [("warmup", 10, []),
+OLD_DEFAULT = ["--set", 'optimiser="davidn"', "--set", 'form="A"']
+PYTHON_CASES = [("warmup", 10, []), ("warmup_old", 10, OLD_DEFAULT),
                 ("default_1", 10, []), ("default_2", 10, []), ("default_3", 10, []),
+                ("davidn_A", 10, OLD_DEFAULT),
                 ("default_flat", 10, ["--set", 'projection="flat"']),
-                ("cache", 10, ["--set", 'xlamb="cache"']),
                 ("original_t10", 10, ["--preset", "original"]),
                 ("default_t1", 1, []), ("default_t2", 2, []), ("default_t4", 4, []),
                 ("default_t8", 8, [])]
@@ -45,6 +51,17 @@ def cpu_load():
                         "(Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average"],
                        capture_output=True, text=True)
     return r.stdout.strip()
+
+
+def speed_probe():
+    """Seconds for a fixed single-threaded numpy job (best of 3): a yardstick for the machine
+    itself, independent of this package."""
+    code = ("import time, numpy as np; a = np.random.default_rng(0).random((600, 600)); b = []\n"
+            "for _ in range(3):\n t = time.perf_counter(); [np.linalg.qr(a) for _ in range(10)]; "
+            "b.append(time.perf_counter() - t)\nprint(min(b))")
+    env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, env=env)
+    return float(r.stdout.strip()) if r.returncode == 0 else float("nan")
 
 
 class PeakMemory(threading.Thread):
@@ -67,7 +84,7 @@ def run_python(name, threads, extra, out_root):
     out = out_root / name
     cmd = [sys.executable, "-I", "-c", BOOT, str(CONFIG), "--out", str(out),
            "--threads", str(threads), *extra]
-    load = cpu_load()
+    load, probe = cpu_load(), speed_probe()
     t0 = time.perf_counter()
     p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     mem = PeakMemory(f"PID eq {p.pid}")
@@ -81,13 +98,14 @@ def run_python(name, threads, extra, out_root):
     c = re.search(r"likelihood calls (\d+)", log.read_text()) if log.exists() else None
     return dict(case=name, threads=threads, wall_s=f"{wall:.1f}", fit_s=m and m[1], outputs_s=m and m[2],
                 calls=c and c[1], neg_loglik=m and m[3], converged=m and m[4],
-                peak_mb=f"{mem.peak_kb / 1024:.0f}", load_before_pct=load, exit=p.returncode)
+                peak_mb=f"{mem.peak_kb / 1024:.0f}", load_before_pct=load, probe_s=f"{probe:.3f}",
+                exit=p.returncode)
 
 
 def run_fortran(out_root):
     d = out_root / FORTRAN_CASE
     shutil.copytree(ROOT / "data/jma", d)
-    load = cpu_load()
+    load, probe = cpu_load(), speed_probe()
     mem = PeakMemory(f"IMAGENAME eq {FORTRAN.name}")
     mem.start()
     t0 = time.perf_counter()
@@ -99,7 +117,8 @@ def run_fortran(out_root):
     nll = re.findall(r"- log likelihood =\s*(\S+)", (d / "jap.out").read_text())
     return dict(case=FORTRAN_CASE, threads=10, wall_s=f"{wall:.1f}", fit_s=None, outputs_s=None, calls=None,
                 neg_loglik=nll[-1].replace("D", "E") if nll else None, converged=None,
-                peak_mb=f"{mem.peak_kb / 1024:.0f}", load_before_pct=load, exit=code)
+                peak_mb=f"{mem.peak_kb / 1024:.0f}", load_before_pct=load, probe_s=f"{probe:.3f}",
+                exit=code)
 
 
 def write_summary(rows, out_root):
@@ -118,6 +137,9 @@ def compare_outputs(out_root):
         if probs(a).exists() and probs(b).exists():
             same = probs(a).read_bytes() == probs(b).read_bytes()
             lines.append(f"probs.dat {a} vs {b}: {'byte-identical' if same else 'DIFFERENT'}")
+    if probs("default_1").exists() and probs("davidn_A").exists():
+        x, y = np.loadtxt(probs("default_1")), np.loadtxt(probs("davidn_A"))
+        lines.append(f"phi default_1 (BFGS, K) vs davidn_A: max |diff| {np.abs(x[:, 1] - y[:, 1]).max():.3e}")
     if probs(FORTRAN_CASE).exists():
         ref = np.loadtxt(probs(FORTRAN_CASE))
         for a in ("original_t10", "default_flat", "default_1"):
@@ -154,7 +176,8 @@ def main():
     cases = [c for c in PYTHON_CASES if c[0] in wanted]
     print("cases:", [c[0] for c in cases] + ([FORTRAN_CASE] if with_fortran else []))
     if a.dry_run:
-        print("mpiexec:", shutil.which("mpiexec"), "| CPU load now:", cpu_load(), "%")
+        print("mpiexec:", shutil.which("mpiexec"), "| CPU load now:", cpu_load(), "% | speed probe:",
+              f"{speed_probe():.3f} s")
         return
 
     out_root = ROOT / "build/timing" / time.strftime("%Y%m%d_%H%M%S")
@@ -172,6 +195,11 @@ def main():
         flag = "  LOAD HIGH BEFORE START" if row["load_before_pct"].isdigit() and int(row["load_before_pct"]) > BUSY_LOAD else ""
         print(f"  wall {row['wall_s']} s, fit {row['fit_s']} s, peak {row['peak_mb']} MB, "
               f"-logL {row['neg_loglik']}, exit {row['exit']}{flag}", flush=True)
+    probes = [float(r["probe_s"]) for r in rows if r["probe_s"] != "nan"]
+    if probes:
+        best = min(probes)
+        slow = [r["case"] for r in rows if r["probe_s"] != "nan" and float(r["probe_s"]) > SLOW_PROBE * best]
+        print(f"speed probe: fastest {best:.3f} s; suspect (> {SLOW_PROBE}x): {slow or 'none'}")
     report = compare_outputs(out_root)
     (out_root / "compare.txt").write_text("\n".join(report) + "\n")
     print("\n".join(report))

@@ -66,6 +66,12 @@ class Settings:
     max_inner: int = 11
     # [run]
     threads: int = 0                # 0 = serial loops; >0 = Numba threads (bit-identical)
+    # Optional uncertainty estimates (see StochasticDeclustering.standard_errors, bootstrap.py).
+    hessian_errors: bool = False    # standard errors from the Hessian, as analysed by Wang,
+                                    # Schoenberg & Jackson (2010) (background held fixed: too small)
+    bootstrap: int = 0              # parametric bootstrap replicates, Dutilleul, Genest & Peng
+                                    # (2024) / ETASbootstrap (0 = off; 1 fit each)
+    bootstrap_seed: int = 0
     # [advanced]
     quadrature: str = "sgl"         # polygon integrals: "sgl" (see kernels) or "ndiv" (original)
     optimiser: str = "bfgs"         # "bfgs" (see bfgs) or "davidn" (the original's DFP)
@@ -107,9 +113,9 @@ class Settings:
             raise ValueError("form 'K' needs quadrature 'sgl' (use form 'A' with 'ndiv')")
         if (self.npp < 1 or self.ndiv < 1 or self.sgl_nodes < 1 or self.sgl_nodes_background < 1
                 or self.max_sweeps < 1 or self.max_outer < 1 or self.max_inner < 1
-                or self.chunksize < 1):
+                or self.chunksize < 1 or self.bootstrap < 0 or self.bootstrap == 1):
             raise ValueError("need npp, ndiv, sgl_nodes, sgl_nodes_background, max_sweeps, "
-                             "max_outer, max_inner, chunksize >= 1")
+                             "max_outer, max_inner, chunksize >= 1, bootstrap 0 or >= 2")
         if min(self.tol, self.outer_tol, self.inner_tol, self.ndiv_check_tol, self.ls_step,
                self.frint_eps, self.frint_eps_r, self.log_floor) <= 0:
             raise ValueError("tolerances, guards and ls_step must be > 0")

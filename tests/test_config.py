@@ -5,6 +5,7 @@
 - converge=True stops on its tolerances; ndiv check runs.
 Run: python -I tests/test_config.py"""
 import dataclasses
+import os
 import sys
 import tempfile
 import warnings
@@ -97,6 +98,23 @@ def test_sections_cover_settings_and_roundtrip():
     assert sd2.settings == sd.settings
     assert np.array_equal(sd2.catalog.x, sd.catalog.x)
     assert np.array_equal(sd2.params.to_array(), sd.params.to_array())
+    # Loaded by a relative path (as the CLI does), dumped into another folder, reloaded from a
+    # third working directory: paths must resolve from the dumped file, not the working dir.
+    old = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            os.chdir(ROOT)
+            sd = StochasticDeclustering.from_config("configs/jma.toml")
+            c = sd.config
+            p = Path(tmp) / "out" / "config.toml"
+            p.parent.mkdir()
+            p.write_bytes(config.dump(c["settings"], c["input"], c["params"], c["grid"],
+                                      c["preset"], p.parent).encode("utf-8"))
+            os.chdir(tmp)
+            sd3 = StochasticDeclustering.from_config(p)
+        finally:
+            os.chdir(old)
+    assert np.array_equal(sd3.catalog.x, sd.catalog.x)
 
 
 def test_convergence_small():
@@ -127,7 +145,52 @@ def test_convergence_small():
                          [(o[1],) for o in outers]], "converged", sd.converged)
 
 
+def test_jitter():
+    """Opt-in jitter: off = identical arrays; on = bounded, seeded, sorted, cuts after jitter."""
+    from steqpy.readers import read_catalog
+    cat = ROOT / "data/jma/alljpM45.etas"
+    base = read_catalog(cat, 4.5, 0.0, 23376.0)
+    off = read_catalog(cat, 4.5, 0.0, 23376.0, {"lon": 0.0, "lat": 0.0, "mag": 0.0, "t": 0.0}, 7)
+    assert all(np.array_equal(a, b) for a, b in zip(base, off))
+    # lon/lat only: same events in the same order, moved by at most h, not all by 0
+    j = read_catalog(cat, 4.5, 0.0, 23376.0, {"lon": 0.01, "lat": 0.02}, 3)
+    assert len(j[0]) == len(base[0]) and np.array_equal(j[3], base[3])
+    for k, h in ((0, 0.01), (1, 0.02)):
+        d = np.abs(j[k] - base[k])
+        assert d.max() <= h and d.min() >= 0 and np.median(d) > h / 4, (k, d.max(), np.median(d))
+    assert all(np.array_equal(a, b) for a, b in
+               zip(j, read_catalog(cat, 4.5, 0.0, 23376.0, {"lon": 0.01, "lat": 0.02}, 3)))
+    # lat noise does not depend on the other widths (all columns drawn every time)
+    j2 = read_catalog(cat, 4.5, 0.0, 23376.0, {"lat": 0.02, "lon": 0.05}, 3)
+    assert np.array_equal(j2[1], j[1])
+    # mag and t: cuts applied after the jitter, output sorted by time
+    m = read_catalog(cat, 4.5, 0.0, 23376.0, {"mag": 0.05, "t": 0.01}, 1)
+    assert m[2].min() > 4.5 - 1e-6 and np.all(np.diff(m[3]) >= 0)
+    assert m[3].min() > 0 and m[3].max() <= 23376.0
+    assert abs(len(m[0]) - len(base[0])) < 0.2 * len(base[0])
+    for bad in (-0.1, float("nan")):
+        try:
+            read_catalog(cat, 4.5, 0.0, 23376.0, {"lon": bad}, 0)
+            raise AssertionError("bad jitter width accepted")
+        except ValueError:
+            pass
+    # through the config: keys accepted, written back by dump, fit inputs change
+    raw = config.tomllib.loads(TOML.read_text())
+    for k in ("catalog", "polygon"):                # a dict source resolves paths from cwd
+        raw["input"][k] = str(TOML.parent / raw["input"][k])
+    raw["preset"] = "original"                      # flat projection: y depends on lat only
+    sd = StochasticDeclustering.from_config(raw)
+    raw["input"].update(jitter_lon=0.01, jitter_seed=5)
+    sdj = StochasticDeclustering.from_config(raw)
+    assert len(sdj.catalog) == len(sd.catalog) and not np.array_equal(sdj.catalog.x, sd.catalog.x)
+    assert np.array_equal(sdj.catalog.y, sd.catalog.y)
+    c = sdj.config
+    text = config.dump(c["settings"], c["input"], c["params"], c["grid"], c["preset"])
+    assert "jitter_lon = 0.01" in text and "jitter_seed = 5" in text
+
+
 if __name__ == "__main__":
+    test_jitter()
     test_inputs_match_readata()
     test_reversed_polygon_and_overrides()
     test_bad_configs()

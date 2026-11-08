@@ -91,9 +91,26 @@ def test_laea():
     assert abs(a_proj / a_true - 1) < 1e-5, a_proj / a_true
 
 
+def test_inverse():
+    """inverse undoes the projection: both kinds, JMA and a southern-hemisphere polygon
+    (Indonesia), points up to ~20 deg from the centre."""
+    rng = np.random.default_rng(1)
+    indo = np.array([[95.78, -15.40], [135.77, -15.40], [135.77, 1.91], [95.78, 1.91]])
+    for poly in (JMA, indo):
+        for kind in ("flat", "laea"):
+            pr = geo.Projection(kind, poly[:, 0], poly[:, 1])
+            lon = pr.lon0 + rng.uniform(-20, 20, 500)
+            lat = np.clip(pr.lat0 + rng.uniform(-20, 20, 500), -80, 80)
+            lo, la = pr.inverse(*pr(lon, lat))
+            assert np.max(np.abs(lo - lon)) < 1e-9 and np.max(np.abs(la - lat)) < 1e-9, kind
+            lo, la = pr.inverse(*pr(pr.lon0, pr.lat0))      # centre: rho = 0
+            assert abs(lo - pr.lon0) < 1e-12 and abs(la - pr.lat0) < 1e-12
+
+
 if __name__ == "__main__":
     test_units()
     test_polygon_file_and_checks()
     test_flat_matches_original()
     test_laea()
+    test_inverse()
     print("ok")

@@ -234,6 +234,22 @@ class Projection:
         y = r * k * (math.cos(phi0) * np.sin(phi) - math.sin(phi0) * np.cos(phi) * np.cos(lam))
         return x, y
 
+    def inverse(self, x, y):
+        """model x, y -> lon/lat (deg). laea: Snyder (1987) eqs 20-14, 24-16, 24-17."""
+        x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+        if self.kind == "flat":
+            return x / self.cosm, y.copy()
+        r = 180.0 / math.pi
+        phi0 = math.radians(self.lat0)
+        rho = np.hypot(x, y)
+        c = 2.0 * np.arcsin(np.minimum(rho / (2.0 * r), 1.0))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            s = np.where(rho > 0, y * np.sin(c) * math.cos(phi0) / rho, 0.0)
+        lat = np.degrees(np.arcsin(np.clip(np.cos(c) * math.sin(phi0) + s, -1.0, 1.0)))
+        lon = self.lon0 + np.degrees(np.arctan2(
+            x * np.sin(c), rho * math.cos(phi0) * np.cos(c) - y * math.sin(phi0) * np.sin(c)))
+        return lon, lat
+
 
 def great_circle_deg(lon1, lat1, lon2, lat2):
     """Haversine distance in degrees of arc."""
