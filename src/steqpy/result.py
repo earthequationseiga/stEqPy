@@ -221,6 +221,10 @@ class DeclusteringResult:
                        "bandwidth": _sig(self.bandwidth, 8)},
             "region": {"polygon": np.column_stack([px, py]), "t_start": r.t_start, "t_end": r.t_end},
             "seeds": {"jitter": inp.get("jitter_seed", 0), "bootstrap": self.settings.bootstrap_seed},
+            # half-widths as given (0 = off, "precision"), t in days; the website shows these
+            "jitter": {"lon": inp.get("jitter_lon", 0), "lat": inp.get("jitter_lat", 0),
+                       "mag": inp.get("jitter_mag", 0), "t_days": inp.get("jitter_t", 0),
+                       "seed": inp.get("jitter_seed", 0)},
             "projection": None if self.projection is None else
             {"kind": self.projection.kind, "lon0": self.projection.lon0, "lat0": self.projection.lat0,
              "note": "laea: Lambert azimuthal equal-area at (lon0, lat0), radius 180/pi deg; "
@@ -259,6 +263,14 @@ class DeclusteringResult:
         from . import bootstrap
         return bootstrap.run(self, n, seed, log or (lambda msg: None))
 
+    def save_json(self, path):
+        """Write to_dict() as JSON to path (any name, e.g. "kma2012.json"): the file the
+        website opens ("Open a result file"). Returns the Path."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), allow_nan=False, separators=(",", ":")), encoding="utf-8")
+        return path
+
     def write_outputs(self, out):
         """probs.dat, rates.dat (original formats), params.txt, result.json (see to_dict),
         config.toml (resolved: re-running it reproduces this fit)."""
@@ -268,8 +280,7 @@ class DeclusteringResult:
             for i in range(len(self.catalog)):
                 fh.write(f" {i + 1:8d}{self.background_prob[i]:20.10f}"
                          f"{self.bandwidth[i]:20.10f}{self.background_rate[i]:20.10f}\n")
-        (out / "result.json").write_text(
-            json.dumps(self.to_dict(), allow_nan=False, separators=(",", ":")), encoding="utf-8")
+        self.save_json(out / "result.json")
         if self.grid:
             _, _, rates = self.rate_grid()
             mx, my = self.grid["n"]
